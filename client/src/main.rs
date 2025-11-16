@@ -135,29 +135,25 @@ fn main() {
     
     println!("Generating key pairs for {} parties...", n);
     let key_timer = start_timer!(|| "Key generation");
-    
-    // Create the dummy party's keys (party 0, always participates)
+
+    // Generate secret keys for all parties
     let mut sk = Vec::with_capacity(n);
-    let mut pk = Vec::with_capacity(n);
-    
-    sk.push(SecretKey::<E>::new(&mut rng));
-    sk[0].nullify(); // Dummy party has nullified key
-    pk.push(match sk[0].lagrange_get_pk(0, &lagrange_params, n) {
-        Ok(key) => key,
-        Err(e) => handle_error("Failed to generate public key for dummy party (party 0)", e),
-    });
-    
-    // Generate keys for remaining parties
-    for i in 1..n {
-        sk.push(SecretKey::<E>::new(&mut rng));
-        pk.push(match sk[i].lagrange_get_pk(i, &lagrange_params, n) {
-            Ok(key) => key,
-            Err(e) => handle_error(&format!("Failed to generate public key for party {}", i), e),
-        });
+    for i in 0..n {
+        let mut secret_key = SecretKey::<E>::new(&mut rng);
+        if i == 0 {
+            secret_key.nullify(); // Dummy party (party 0) has nullified key
+        }
+        sk.push(secret_key);
     }
-    
+
+    // Batch generate all public keys at once (more efficient than one-by-one)
+    let pk = match SecretKey::<E>::batch_lagrange_get_pk(&sk, &lagrange_params, n) {
+        Ok(keys) => keys,
+        Err(e) => handle_error("Failed to generate public keys", e),
+    };
+
     end_timer!(key_timer);
-    println!("✓ Generated {} key pairs", n);
+    println!("✓ Generated {} key pairs (using batch generation for better performance)", n);
     println!();
 
     // Aggregate key generation

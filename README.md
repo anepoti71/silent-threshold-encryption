@@ -37,9 +37,13 @@ This fork includes the following improvements over the original implementation:
 - Fixed redundant error check in `LagrangePowers::new`
 - Improved type conversions for better precision (u32 → u64 for large values)
 
+### Performance Optimizations
+- **Batch Public Key Generation**: Added `batch_lagrange_get_pk` method that uses parallel processing to generate all public keys efficiently
+- Optimized MSM operations by reducing code duplication and reusing buffers
+- The client demo now uses batch generation for better performance with multiple parties
+
 ### Code Quality
 - Extracted magic numbers to named constants (`SA1_SIZE`, `SA2_SIZE`, `ENCRYPTION_RANDOMNESS_SIZE`)
-- Optimized MSM operations by reducing code duplication and reusing buffers
 - Changed function parameters from `&Vec<T>` to `&[T]` for better ergonomics
 - Removed unused code (`skip_leading_zeros_and_convert_to_bigints`)
 
@@ -54,7 +58,7 @@ This fork includes the following improvements over the original implementation:
 - Improved inline comments and docstrings throughout the codebase
 
 ## Overview
-* [`src/setup`](src/setup.rs): Contains an implementation for sampling public key pairs and aggregating keys of a chosen committee. Also contains the `partial_decryption` method which is essentially a BLS signature. Note that the `get_pk` method runs in quadratic time. This can be reduced to linear time by preprocessing commitments to lagrange polynomials.
+* [`src/setup`](src/setup.rs): Contains an implementation for sampling public key pairs and aggregating keys of a chosen committee. Also contains the `partial_decryption` method which is essentially a BLS signature. The `lagrange_get_pk` method uses preprocessed commitments to Lagrange polynomials for O(n) per-key generation. For generating all n keys, use `batch_lagrange_get_pk` which leverages parallel processing for better performance.
 * [`src/encryption`](src/encryption.rs): Contains an implementation of the `encrypt` method for the silent threshold encryption scheme.
 * [`src/decryption`](src/decryption.rs): Contains an implementation of `agg_dec` which gathers partial decryptions and recovers the message.
 

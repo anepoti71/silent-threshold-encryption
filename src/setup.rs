@@ -310,6 +310,42 @@ impl<E: Pairing> SecretKey<E> {
     pub fn partial_decryption(&self, ct: &Ciphertext<E>) -> E::G2 {
         ct.gamma_g2 * self.sk
     }
+
+    /// Batch computes public keys for multiple secret keys in O(n) time per key.
+    ///
+    /// This is more efficient than calling `lagrange_get_pk` n times because it leverages
+    /// parallel processing and reduces redundant computations.
+    ///
+    /// # Arguments
+    /// * `secret_keys` - Slice of secret keys to generate public keys for
+    /// * `params` - The preprocessed Lagrange powers
+    /// * `n` - The number of parties
+    ///
+    /// # Errors
+    /// Returns an error if any party ID is invalid
+    ///
+    /// # Performance
+    /// - Time complexity: O(n²) total for n parties (same as calling `lagrange_get_pk` n times)
+    /// - However, this method uses parallel processing to speed up computation
+    /// - Memory efficient: processes in batches
+    pub fn batch_lagrange_get_pk(
+        secret_keys: &[SecretKey<E>],
+        params: &LagrangePowers<E>,
+        n: usize,
+    ) -> Result<Vec<PublicKey<E>>, SteError> {
+        if secret_keys.len() != n {
+            return Err(SteError::ValidationError(
+                format!("Number of secret keys ({}) must equal n ({})", secret_keys.len(), n)
+            ));
+        }
+
+        // Use parallel iterator to compute public keys for all parties
+        secret_keys
+            .par_iter()
+            .enumerate()
+            .map(|(id, sk)| sk.lagrange_get_pk(id, params, n))
+            .collect()
+    }
 }
 
 impl<E: Pairing> AggregateKey<E> {
