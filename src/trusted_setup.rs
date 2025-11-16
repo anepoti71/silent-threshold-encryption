@@ -24,9 +24,10 @@
 //! No single participant knows the final τ = τ₁·τ₂·...·τₙ
 
 use ark_ec::pairing::Pairing;
-use ark_ec::{CurveGroup, VariableBaseMSM};
+use ark_ec::{CurveGroup, PrimeGroup, ScalarMul, VariableBaseMSM};
 use ark_ff::{One, PrimeField, UniformRand};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_std::rand::RngCore;
 use ark_std::vec::Vec;
 
 use crate::kzg::{Error as KzgError, PowersOfTau};
@@ -57,7 +58,7 @@ impl<E: Pairing> Ceremony<E> {
     /// **WARNING**: This creates the initial contribution using the provided RNG.
     /// For production use, the first participant should use cryptographically secure
     /// randomness (e.g., from `getrandom`) and DESTROY their secret after contribution.
-    pub fn new<R: rand::RngCore>(max_degree: usize, rng: &mut R) -> Result<Self, KzgError> {
+    pub fn new<R: RngCore>(max_degree: usize, rng: &mut R) -> Result<Self, KzgError> {
         if max_degree < 1 {
             return Err(KzgError::DegreeIsZero);
         }
@@ -110,7 +111,7 @@ impl<E: Pairing> Ceremony<E> {
     /// - The RNG must be cryptographically secure (use `getrandom` or similar)
     /// - After this function returns, caller MUST zeroize all RNG state and secrets
     /// - The secret τ must never be stored or transmitted
-    pub fn contribute<R: rand::RngCore>(&mut self, rng: &mut R) -> Result<(), KzgError> {
+    pub fn contribute<R: RngCore>(&mut self, rng: &mut R) -> Result<(), KzgError> {
         let previous = self.contributions.last().unwrap();
 
         // Generate random tau for this participant
@@ -168,8 +169,21 @@ impl<E: Pairing> Ceremony<E> {
 
     /// Verify that a contribution was computed correctly
     ///
-    /// This checks that the relationship between consecutive contributions is valid
-    /// by verifying pairing equations.
+    /// This performs basic sanity checks on the contribution structure.
+    ///
+    /// # Verification Strategy
+    ///
+    /// Currently performs:
+    /// 1. Degree validation - ensures correct number of powers
+    /// 2. Base point verification (τ^0 = 1 should preserve generators)
+    ///
+    /// # TODO for Production
+    ///
+    /// For production use, implement full pairing-based verification:
+    /// - Verify consistency between G and H updates using pairings
+    /// - Implement challenge-response proofs (e.g., Fiat-Shamir)
+    /// - Verify multiple random indices to detect malicious contributions
+    /// - Consider using existing ceremony software like Powers of Tau or trusted setups from Zcash/Ethereum
     pub fn verify_contribution(&self, index: usize) -> bool {
         if index == 0 || index >= self.contributions.len() {
             return false;
@@ -193,11 +207,11 @@ impl<E: Pairing> Ceremony<E> {
             return false;
         }
 
-        // More sophisticated verification would use pairing checks:
-        // e(curr[i], H) = e(curr[i-1], curr.proof_h) for consistency
-        // We'll implement a basic version here
+        // Additional structural validations could be added here
+        // For now, we perform basic checks and trust that participants are honest
+        // or that external verification will be performed
 
-        true // In production, implement full pairing-based verification
+        true
     }
 
     /// Finalize the ceremony and extract the powers of tau parameters

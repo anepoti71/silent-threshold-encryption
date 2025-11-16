@@ -68,6 +68,7 @@ pub mod encryption;
 pub mod error;
 pub mod kzg;
 pub mod setup;
+pub mod trusted_setup;
 pub mod utils;
 
 pub use error::SteError;

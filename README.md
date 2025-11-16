@@ -93,7 +93,84 @@ This fork includes the following improvements over the original implementation:
   - **BLS12-381 pairing-friendly elliptic curve**: The discrete logarithm assumption in the curve groups
   - **KZG10 polynomial commitment scheme**: Security depends on the trusted setup (powers of tau)
   - **Threshold scheme**: Assumes honest majority (at least t+1 out of n parties are honest)
-- **Trusted Setup**: The KZG parameters (powers of tau) must be generated in a trusted setup ceremony. Using publicly trusted parameters or generating your own with appropriate security guarantees.
+
+### Trusted Setup (Powers of Tau)
+
+**⚠️ CRITICAL SECURITY REQUIREMENT**: The KZG polynomial commitment scheme requires a secure "powers of tau" trusted setup ceremony. The security of the entire system depends on this setup being generated correctly.
+
+#### What is a Trusted Setup?
+
+The trusted setup generates parameters of the form `{τ^i G, τ^i H}` where τ is a secret value that **must be destroyed** after the ceremony. If an attacker learns τ, they can break the system entirely.
+
+#### Security Model
+
+The ceremony is secure as long as **at least ONE participant**:
+1. Generates their contribution using cryptographically secure randomness
+2. **Destroys** their secret randomness after contributing
+3. Does not collude with all other participants
+
+This is called a "1-of-N" trust model - you only need to trust that one participant was honest.
+
+#### Implementation Options
+
+This library provides a `trusted_setup` module for multi-party ceremonies:
+
+```rust
+use silent_threshold_encryption::trusted_setup::Ceremony;
+
+// Initialize ceremony (first participant)
+let mut ceremony = Ceremony::<E>::new(max_degree, &mut secure_rng)?;
+
+// Additional participants contribute
+ceremony.contribute(&mut secure_rng)?;
+
+// Verify contributions
+for i in 1..ceremony.num_participants() {
+    assert!(ceremony.verify_contribution(i));
+}
+
+// Extract final parameters
+let params = ceremony.finalize();
+```
+
+#### Production Recommendations
+
+For production systems, you should:
+
+1. **Use Existing Trusted Setups**: Consider using powers-of-tau parameters from established ceremonies:
+   - Zcash Powers of Tau ceremony (https://zfnd.org/conclusion-of-the-powers-of-tau-ceremony/)
+   - Ethereum KZG Ceremony (https://ceremony.ethereum.org/)
+   - Perpetual Powers of Tau (https://github.com/privacy-scaling-explorations/perpetualpowersoftau)
+
+2. **Run Your Own Multi-Party Ceremony**:
+   - Use the `trusted_setup` module with multiple independent participants
+   - Each participant must use `getrandom` or equivalent OS entropy
+   - Each participant must destroy their secret τ after contributing (ideally using secure erasure)
+   - Publish transcripts publicly for transparency
+   - Implement full pairing-based verification (see module documentation)
+
+3. **Never Use Single-Party Setup in Production**:
+   - The example code and tests use single-party setup for simplicity
+   - Single-party setups are **ONLY** acceptable for testing/development
+   - A compromised single party can break all security guarantees
+
+#### Current Implementation Status
+
+⚠️ **WARNING**: The demo client (`client/`) currently uses a **single-party** setup for simplicity:
+```rust
+// INSECURE FOR PRODUCTION - Demo/test only
+let tau = Fr::rand(&mut rng);
+let kzg_params = KZG10::<E, UniPoly381>::setup(n, tau)?;
+```
+
+This is **acceptable ONLY** for:
+- Development and testing
+- Academic demonstrations
+- Prototype systems
+
+For production, you **MUST** either:
+- Use parameters from a public multi-party ceremony
+- Run your own multi-party ceremony using the `trusted_setup` module
 
 ### Parameter Selection
 - **Number of Parties (n)**: Must be a power of 2. Consider computational and communication costs when selecting n.
