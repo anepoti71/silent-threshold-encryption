@@ -41,6 +41,23 @@ pub enum Error {
     },
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::DegreeIsZero => write!(f, "Degree cannot be zero"),
+            Error::TooManyCoefficients { num_coefficients, num_powers } => {
+                write!(
+                    f,
+                    "Polynomial has too many coefficients: {} > {}",
+                    num_coefficients, num_powers
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
 impl<E, P> KZG10<E, P>
 where
     E: Pairing,

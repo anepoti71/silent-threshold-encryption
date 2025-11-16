@@ -10,6 +10,17 @@ NC='\033[0m'
 echo -e "${GREEN}Testing Distributed Silent Threshold Encryption${NC}"
 echo ""
 
+# Check if release binary exists
+BINARY_PATH="./target/release/examples/distributed_protocol"
+if [ ! -f "$BINARY_PATH" ]; then
+    echo -e "${RED}Error: Release binary not found at $BINARY_PATH${NC}"
+    echo ""
+    echo -e "${YELLOW}Please build the example first:${NC}"
+    echo -e "${GREEN}cargo build --example distributed_protocol --features distributed --release${NC}"
+    echo ""
+    exit 1
+fi
+
 # Kill any existing processes
 pkill -f distributed_protocol 2>/dev/null || true
 sleep 1
