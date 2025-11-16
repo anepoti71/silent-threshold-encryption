@@ -375,7 +375,7 @@ mod tests {
         let n = 16;
         let tau = Fr::rand(&mut rng);
         let params = KZG10::<E, UniPoly381>::setup(n, tau).unwrap();
-        let lagrange_params = LagrangePowers::<E>::new(Fr::rand(&mut rng), n).unwrap();
+        let lagrange_params = LagrangePowers::<E>::new(tau, n).unwrap();
 
         let mut sk: Vec<SecretKey<E>> = Vec::new();
         let mut pk: Vec<PublicKey<E>> = Vec::new();

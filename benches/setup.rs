@@ -19,12 +19,12 @@ fn bench_setup(c: &mut Criterion) {
     for size in 3..=7 {
         let n = 1 << size; // actually n-1 total parties. one party is a dummy party that is always true
         let tau = Fr::rand(&mut rng);
-        let params = KZG10::<E, UniPoly381>::setup(n, tau.clone()).unwrap();
+        let params = KZG10::<E, UniPoly381>::setup(n, tau).unwrap();
 
         let sk = SecretKey::<E>::new(&mut rng);
 
         group.bench_with_input(BenchmarkId::from_parameter(n), &params, |b, inp| {
-            b.iter(|| sk.get_pk(0, &inp, n));
+            b.iter(|| sk.get_pk(0, inp, n));
         });
     }
 
@@ -36,7 +36,7 @@ fn bench_setup(c: &mut Criterion) {
     for size in 3..=10 {
         let n = 1 << size; // actually n-1 total parties. one party is a dummy party that is always true
         let tau = Fr::rand(&mut rng);
-        let lagrange_params = LagrangePowers::<E>::new(tau, n);
+        let lagrange_params = LagrangePowers::<E>::new(tau, n).unwrap();
 
         let sk = SecretKey::<E>::new(&mut rng);
 
@@ -44,7 +44,7 @@ fn bench_setup(c: &mut Criterion) {
             BenchmarkId::from_parameter(n),
             &lagrange_params,
             |b, inp| {
-                b.iter(|| sk.lagrange_get_pk(0, &inp, n));
+                b.iter(|| sk.lagrange_get_pk(0, inp, n));
             },
         );
     }

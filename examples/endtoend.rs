@@ -23,7 +23,7 @@ fn main() {
 
     let kzg_timer = start_timer!(|| "Setting up KZG parameters");
     let tau = Fr::rand(&mut rng);
-    let kzg_params = KZG10::<E, UniPoly381>::setup(n, tau.clone()).unwrap();
+    let kzg_params = KZG10::<E, UniPoly381>::setup(n, tau).unwrap();
     end_timer!(kzg_timer);
 
     let lagrange_params_timer = start_timer!(|| "Preprocessing lagrange powers");

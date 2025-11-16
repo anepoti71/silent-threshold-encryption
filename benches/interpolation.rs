@@ -15,12 +15,8 @@ fn bench_interpolate(c: &mut Criterion) {
         let t: usize = n / 2;
 
         let mut selector: Vec<bool> = Vec::new();
-        for _ in 0..t + 1 {
-            selector.push(true);
-        }
-        for _ in t + 1..n {
-            selector.push(false);
-        }
+        selector.extend(std::iter::repeat_n(true, t + 1));
+        selector.extend(std::iter::repeat_n(false, n - t - 1));
 
         let domain = Radix2EvaluationDomain::<F>::new(n).unwrap();
         let domain_elements: Vec<F> = domain.elements().collect();
@@ -37,7 +33,7 @@ fn bench_interpolate(c: &mut Criterion) {
 
         // compute the decryption key
         group.bench_with_input(BenchmarkId::from_parameter(n), &points, |b, inp| {
-            b.iter(|| interp_mostly_zero(F::one(), &inp));
+            b.iter(|| interp_mostly_zero(F::one(), inp));
         });
     }
 

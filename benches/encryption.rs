@@ -17,19 +17,19 @@ fn bench_encrypt(c: &mut Criterion) {
     let n = 8;
     let t = 2;
     let tau = Fr::rand(&mut rng);
-    let params = KZG10::<E, UniPoly381>::setup(n, tau.clone()).unwrap();
+    let params = KZG10::<E, UniPoly381>::setup(n, tau).unwrap();
 
     let mut sk: Vec<SecretKey<E>> = Vec::new();
     let mut pk: Vec<PublicKey<E>> = Vec::new();
 
     for i in 0..n {
         sk.push(SecretKey::<E>::new(&mut rng));
-        pk.push(sk[i].get_pk(0, &params, n))
+        pk.push(sk[i].get_pk(0, &params, n).unwrap());
     }
 
-    let ak = AggregateKey::<E>::new(pk, &params);
+    let ak = AggregateKey::<E>::new(pk, &params).unwrap();
 
-    c.bench_function("encrypt", |b| b.iter(|| encrypt::<E>(&ak, t, &params)));
+    c.bench_function("encrypt", |b| b.iter(|| encrypt::<E, _>(&ak, t, &params, &mut rng)));
 }
 
 criterion_group!(benches, bench_encrypt);

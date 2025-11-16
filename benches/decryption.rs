@@ -23,8 +23,8 @@ fn bench_decrypt(c: &mut Criterion) {
         let t: usize = n / 2;
 
         let tau = Fr::rand(&mut rng);
-        let params = KZG10::<E, UniPoly381>::setup(n, tau.clone()).unwrap();
-        let lagrange_params = LagrangePowers::<E>::new(tau, n);
+        let params = KZG10::<E, UniPoly381>::setup(n, tau).unwrap();
+        let lagrange_params = LagrangePowers::<E>::new(tau, n).unwrap();
 
         let mut sk: Vec<SecretKey<E>> = Vec::new();
         let mut pk: Vec<PublicKey<E>> = Vec::new();
@@ -32,20 +32,20 @@ fn bench_decrypt(c: &mut Criterion) {
         // create the dummy party's keys
         sk.push(SecretKey::<E>::new(&mut rng));
         sk[0].nullify();
-        pk.push(sk[0].lagrange_get_pk(0, &lagrange_params, n));
+        pk.push(sk[0].lagrange_get_pk(0, &lagrange_params, n).unwrap());
 
         for i in 1..n {
             sk.push(SecretKey::<E>::new(&mut rng));
-            pk.push(sk[i].lagrange_get_pk(i, &lagrange_params, n));
+            pk.push(sk[i].lagrange_get_pk(i, &lagrange_params, n).unwrap());
         }
 
-        let agg_key = AggregateKey::<E>::new(pk, &params);
-        let ct = encrypt::<E>(&agg_key, t, &params);
+        let agg_key = AggregateKey::<E>::new(pk, &params).unwrap();
+        let ct = encrypt::<E, _>(&agg_key, t, &params, &mut rng).unwrap();
 
         // compute partial decryptions
         let mut partial_decryptions: Vec<G2> = Vec::new();
-        for i in 0..t + 1 {
-            partial_decryptions.push(sk[i].partial_decryption(&ct));
+        for sk_i in sk.iter().take(t + 1) {
+            partial_decryptions.push(sk_i.partial_decryption(&ct));
         }
         for _ in t + 1..n {
             partial_decryptions.push(G2::zero());
@@ -53,12 +53,8 @@ fn bench_decrypt(c: &mut Criterion) {
 
         // compute the decryption key
         let mut selector: Vec<bool> = Vec::new();
-        for _ in 0..t + 1 {
-            selector.push(true);
-        }
-        for _ in t + 1..n {
-            selector.push(false);
-        }
+        selector.extend(std::iter::repeat_n(true, t + 1));
+        selector.extend(std::iter::repeat_n(false, n - t - 1));
 
         group.bench_with_input(
             BenchmarkId::from_parameter(n),
