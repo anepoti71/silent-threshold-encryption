@@ -1,27 +1,53 @@
 use std::ops::Mul;
 
+use crate::error::SteError;
 use crate::{kzg::PowersOfTau, setup::AggregateKey};
 use ark_ec::{
     pairing::{Pairing, PairingOutput},
     PrimeGroup,
 };
 use ark_serialize::*;
-use ark_std::{UniformRand, Zero};
+use ark_std::{rand::RngCore, UniformRand, Zero};
 
-#[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
+/// Number of G1 elements in the sa1 proof array.
+pub const SA1_SIZE: usize = 2;
+
+/// Number of G2 elements in the sa2 proof array.
+pub const SA2_SIZE: usize = 6;
+
+/// Number of random scalar values used during encryption.
+pub const ENCRYPTION_RANDOMNESS_SIZE: usize = 5;
+
+/// A ciphertext in the silent threshold encryption scheme.
+///
+/// Contains the encrypted message key along with proof elements.
+#[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Debug)]
 pub struct Ciphertext<E: Pairing> {
+    /// G2 element: gamma * H (where gamma is random)
     pub gamma_g2: E::G2,
-    pub sa1: [E::G1; 2],
-    pub sa2: [E::G2; 6],
-    pub enc_key: PairingOutput<E>, //key to be used for encapsulation
-    pub t: usize,                  //threshold
+    /// G1 elements for proof (size = SA1_SIZE)
+    pub sa1: [E::G1; SA1_SIZE],
+    /// G2 elements for proof (size = SA2_SIZE)
+    pub sa2: [E::G2; SA2_SIZE],
+    /// The encrypted key (pairing output)
+    pub enc_key: PairingOutput<E>,
+    /// The threshold value
+    pub t: usize,
 }
 
 impl<E: Pairing> Ciphertext<E> {
+    /// Creates a new ciphertext.
+    ///
+    /// # Arguments
+    /// * `gamma_g2` - G2 element: gamma * H
+    /// * `sa1` - SA1_SIZE G1 proof elements
+    /// * `sa2` - SA2_SIZE G2 proof elements
+    /// * `enc_key` - The encrypted key
+    /// * `t` - The threshold
     pub fn new(
         gamma_g2: E::G2,
-        sa1: [E::G1; 2],
-        sa2: [E::G2; 6],
+        sa1: [E::G1; SA1_SIZE],
+        sa2: [E::G2; SA2_SIZE],
         enc_key: PairingOutput<E>,
         t: usize,
     ) -> Self {
@@ -35,26 +61,58 @@ impl<E: Pairing> Ciphertext<E> {
     }
 }
 
-/// t is the threshold for encryption and apk is the aggregated public key
-pub fn encrypt<E: Pairing>(
+/// Encrypts a message key using the aggregate public key.
+///
+/// # Arguments
+/// * `apk` - The aggregate public key
+/// * `t` - The threshold (must be < number of parties)
+/// * `params` - The KZG parameters (powers of tau)
+/// * `rng` - A random number generator
+///
+/// # Errors
+/// Returns an error if t >= n, t + 1 exceeds params length, or other validation fails
+pub fn encrypt<E: Pairing, R: RngCore>(
     apk: &AggregateKey<E>,
     t: usize,
     params: &PowersOfTau<E>,
-) -> Ciphertext<E> {
-    let mut rng = ark_std::test_rng();
-    let gamma = E::ScalarField::rand(&mut rng);
+    rng: &mut R,
+) -> Result<Ciphertext<E>, SteError> {
+    let n = apk.pk.len();
+    
+    // Validate inputs
+    if n == 0 {
+        return Err(SteError::ValidationError(
+            "number of parties must be at least 1".to_string()
+        ));
+    }
+    if t == 0 {
+        return Err(SteError::ValidationError(
+            "threshold must be at least 1".to_string()
+        ));
+    }
+    if t >= n {
+        return Err(SteError::ValidationError(
+            format!("threshold ({}) must be < number of parties ({})", t, n)
+        ));
+    }
+    if t + 1 > params.powers_of_g.len() {
+        return Err(SteError::ValidationError(
+            format!("t + 1 ({}) exceeds KZG parameters length ({})", t + 1, params.powers_of_g.len())
+        ));
+    }
+    let gamma = E::ScalarField::rand(rng);
     let gamma_g2 = params.powers_of_h[0] * gamma;
 
     let g = params.powers_of_g[0];
     let h = params.powers_of_h[0];
 
-    let mut sa1 = [E::G1::generator(); 2];
-    let mut sa2 = [E::G2::generator(); 6];
+    let mut sa1 = [E::G1::generator(); SA1_SIZE];
+    let mut sa2 = [E::G2::generator(); SA2_SIZE];
 
-    let mut s: [E::ScalarField; 5] = [E::ScalarField::zero(); 5];
+    let mut s: [E::ScalarField; ENCRYPTION_RANDOMNESS_SIZE] = [E::ScalarField::zero(); ENCRYPTION_RANDOMNESS_SIZE];
 
     s.iter_mut()
-        .for_each(|s| *s = E::ScalarField::rand(&mut rng));
+        .for_each(|s_elem| *s_elem = E::ScalarField::rand(rng));
 
     // sa1[0] = s0*ask + s3*g^{tau^{t+1}} + s4*g
     sa1[0] = (apk.ask * s[0]) + (params.powers_of_g[t + 1] * s[3]) + (params.powers_of_g[0] * s[4]);
@@ -83,13 +141,13 @@ pub fn encrypt<E: Pairing>(
     // enc_key = s4*e_gh
     let enc_key = apk.e_gh.mul(s[4]);
 
-    Ciphertext {
+    Ok(Ciphertext {
         gamma_g2,
         sa1,
         sa2,
         enc_key,
         t,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -120,11 +178,11 @@ mod tests {
 
         for i in 0..n {
             sk.push(SecretKey::<E>::new(&mut rng));
-            pk.push(sk[i].get_pk(0, &params, n))
+            pk.push(sk[i].get_pk(i, &params, n).unwrap())
         }
 
-        let ak = AggregateKey::<E>::new(pk, &params);
-        let ct = encrypt::<E>(&ak, 2, &params);
+        let ak = AggregateKey::<E>::new(pk, &params).unwrap();
+        let ct = encrypt::<E, _>(&ak, 2, &params, &mut rng).unwrap();
 
         let mut ct_bytes = Vec::new();
         ct.serialize_compressed(&mut ct_bytes).unwrap();

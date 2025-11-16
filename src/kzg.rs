@@ -120,17 +120,6 @@ where
     }
 }
 
-fn skip_leading_zeros_and_convert_to_bigints<F: PrimeField, P: DenseUVPolynomial<F>>(
-    p: &P,
-) -> (usize, Vec<F::BigInt>) {
-    let mut num_leading_zeros = 0;
-    while num_leading_zeros < p.coeffs().len() && p.coeffs()[num_leading_zeros].is_zero() {
-        num_leading_zeros += 1;
-    }
-    let coeffs = convert_to_bigints(&p.coeffs()[num_leading_zeros..]);
-    (num_leading_zeros, coeffs)
-}
-
 pub fn convert_to_bigints<F: PrimeField>(p: &[F]) -> Vec<F::BigInt> {
     ark_std::cfg_iter!(p)
         .map(|s| s.into_bigint())

@@ -27,7 +27,7 @@ fn main() {
     end_timer!(kzg_timer);
 
     let lagrange_params_timer = start_timer!(|| "Preprocessing lagrange powers");
-    let lagrange_params = LagrangePowers::<E>::new(tau, n);
+    let lagrange_params = LagrangePowers::<E>::new(tau, n).unwrap();
     end_timer!(lagrange_params_timer);
 
     println!("Setting up key pairs for {} parties", n);
@@ -37,21 +37,24 @@ fn main() {
         .map(|_| SecretKey::<E>::new(&mut rng))
         .collect::<Vec<_>>();
     sk[0].nullify();
-    let mut pk = vec![sk[0].lagrange_get_pk(0, &lagrange_params, n); n];
+    let mut pk = vec![
+        sk[0].lagrange_get_pk(0, &lagrange_params, n).unwrap();
+        n
+    ];
 
     pk.par_iter_mut().enumerate().for_each(|(i, pk_i)| {
         if i > 0 {
-            *pk_i = sk[i].lagrange_get_pk(i, &lagrange_params, n);
+            *pk_i = sk[i].lagrange_get_pk(i, &lagrange_params, n).unwrap();
         }
     });
     end_timer!(key_timer);
 
     let agg_key_timer = start_timer!(|| "Computing the aggregate key");
-    let agg_key = AggregateKey::<E>::new(pk, &kzg_params);
+    let agg_key = AggregateKey::<E>::new(pk, &kzg_params).unwrap();
     end_timer!(agg_key_timer);
 
     let enc_timer = start_timer!(|| "Encrypting a message");
-    let ct = encrypt::<E>(&agg_key, t, &kzg_params);
+    let ct = encrypt::<E, _>(&agg_key, t, &kzg_params, &mut rng).unwrap();
     end_timer!(enc_timer);
 
     println!("Computing partial decryptions");
@@ -69,7 +72,7 @@ fn main() {
     }
 
     let dec_timer = start_timer!(|| "Aggregating partial decryptions and decrypting");
-    let dec_key = agg_dec(&partial_decryptions, &ct, &selector, &agg_key, &kzg_params);
+    let dec_key = agg_dec(&partial_decryptions, &ct, &selector, &agg_key, &kzg_params).unwrap();
     end_timer!(dec_timer);
     assert_eq!(dec_key, ct.enc_key, "Decryption failed!");
     println!("Decryption successful!");
