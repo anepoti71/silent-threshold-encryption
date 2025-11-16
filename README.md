@@ -64,9 +64,9 @@ This fork includes the following improvements over the original implementation:
 **⚠️ CRITICAL:** This implementation is an academic proof-of-concept prototype and has **NOT** received comprehensive security auditing. It is **NOT ready for production use** and should **NOT** be used to protect sensitive data in real-world applications without thorough security review.
 
 ### Random Number Generation
-- **Client Application**: The client demo (`client/`) uses cryptographically secure OS-backed random number generation (`SecureRng`) seeded from the operating system via `getrandom::fill()`.
+- **Client Application**: The client demo (`client/`) uses cryptographically secure OS-backed random number generation (`SecureRng`) seeded from the operating system via `OsRng`.
 - **Library Functions**: When using the library directly, ensure you provide a cryptographically secure RNG. **Never use deterministic or predictable RNGs** (like `test_rng()`) in production.
-- Always use `getrandom` directly or `rand::rngs::OsRng` (which uses `getrandom` internally) when generating seeds for RNGs. These directly source entropy from the operating system's secure random number generator (e.g., `/dev/urandom` on Unix, `BCryptGenRandom` on Windows).
+- Always use `rand::rngs::OsRng` when generating seeds for RNGs. OsRng directly sources entropy from the operating system's secure random number generator (e.g., `/dev/urandom` on Unix, `BCryptGenRandom` on Windows, `getrandom()` system call on Linux).
 
 ### Secret Key Management
 - **Secret Key Storage**: Secret keys must be stored securely and protected from unauthorized access. Consider using hardware security modules (HSMs) or secure key management systems for production deployments.
@@ -144,7 +144,7 @@ For production systems, you should:
 
 2. **Run Your Own Multi-Party Ceremony**:
    - Use the `trusted_setup` module with multiple independent participants
-   - Each participant must use `getrandom` or equivalent OS entropy
+   - Each participant must use `OsRng` or equivalent cryptographically secure RNG
    - Each participant must destroy their secret τ after contributing (ideally using secure erasure)
    - Publish transcripts publicly for transparency
    - Implement full pairing-based verification (see module documentation)

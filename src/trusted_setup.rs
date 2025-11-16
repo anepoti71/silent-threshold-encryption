@@ -57,7 +57,7 @@ impl<E: Pairing> Ceremony<E> {
     ///
     /// **WARNING**: This creates the initial contribution using the provided RNG.
     /// For production use, the first participant should use cryptographically secure
-    /// randomness (e.g., from `getrandom`) and DESTROY their secret after contribution.
+    /// randomness (e.g., `OsRng`) and DESTROY their secret after contribution.
     pub fn new<R: RngCore>(max_degree: usize, rng: &mut R) -> Result<Self, KzgError> {
         if max_degree < 1 {
             return Err(KzgError::DegreeIsZero);
@@ -108,7 +108,7 @@ impl<E: Pairing> Ceremony<E> {
     /// **WARNING**: The participant MUST destroy their random secret after calling this.
     ///
     /// # Security Requirements
-    /// - The RNG must be cryptographically secure (use `getrandom` or similar)
+    /// - The RNG must be cryptographically secure (use `OsRng` or equivalent)
     /// - After this function returns, caller MUST zeroize all RNG state and secrets
     /// - The secret τ must never be stored or transmitted
     pub fn contribute<R: RngCore>(&mut self, rng: &mut R) -> Result<(), KzgError> {

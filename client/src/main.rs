@@ -9,21 +9,21 @@ use silent_threshold_encryption::{
 };
 use std::io::{self, Write};
 use std::process;
-use rand::{rngs::StdRng, SeedableRng};
+use rand::{rngs::StdRng, SeedableRng, RngCore as RandRngCore};
 
 // Secure RNG wrapper compatible with arkworks' RngCore trait
-// Uses OS-backed entropy via getrandom to seed a deterministic StdRng
+// Uses OS-backed entropy via OsRng to seed a deterministic StdRng
 struct SecureRng {
     inner: StdRng,
 }
 
 impl SecureRng {
     fn new() -> Self {
-        // Use getrandom (OS-backed entropy source) which is cryptographically secure
-        // This is what OsRng uses internally - directly accessing OS entropy
+        // Use OsRng (OS-backed entropy source) which is cryptographically secure
+        // This directly accesses OS entropy (/dev/urandom on Unix, BCryptGenRandom on Windows)
+        use rand::rngs::OsRng;
         let mut seed = [0u8; 32];
-        getrandom::fill(&mut seed)
-            .expect("Failed to get OS entropy - this should never fail on supported platforms");
+        OsRng.fill_bytes(&mut seed);
         SecureRng {
             inner: StdRng::from_seed(seed),
         }
@@ -294,12 +294,12 @@ fn get_parameters() -> Result<(usize, usize), io::Error> {
 
 fn select_parties(n: usize, t: usize) -> Vec<usize> {
     use rand::seq::IteratorRandom;
+    use rand::rngs::OsRng;
 
     // Use cryptographically secure OS-backed RNG for party selection
-    // Seed StdRng from OS entropy via getrandom
+    // Seed StdRng from OS entropy via OsRng
     let mut seed = [0u8; 32];
-    getrandom::fill(&mut seed)
-        .expect("Failed to get OS entropy - this should never fail on supported platforms");
+    OsRng.fill_bytes(&mut seed);
     let mut rng = StdRng::from_seed(seed);
     
     // Dummy party (0) always participates, so we need t more parties
