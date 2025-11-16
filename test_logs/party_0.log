@@ -1,0 +1,12 @@
+🎭 Party 0: Initializing
+🌐 Party 0: Connecting to coordinator at localhost:9999
+✓ Party 0: Connected to coordinator
+
+📨 Party 0: Received request for public key
+🔑 Party 0: Generated nullified secret key (dummy party)
+✓ Party 0: Sent public key to coordinator
+
+📨 Party 0: Received request for partial decryption
+✓ Party 0: Sent partial decryption to coordinator
+
+✅ Party 0: Protocol completed successfully

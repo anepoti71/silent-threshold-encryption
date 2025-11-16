@@ -1,0 +1,9 @@
+🎭 Party 3: Initializing
+🌐 Party 3: Connecting to coordinator at localhost:9999
+✓ Party 3: Connected to coordinator
+
+📨 Party 3: Received request for public key
+🔑 Party 3: Generated secret key
+✓ Party 3: Sent public key to coordinator
+
+✅ Party 3: Protocol completed successfully
