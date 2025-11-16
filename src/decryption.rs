@@ -62,6 +62,7 @@ pub fn agg_dec<E: Pairing>(
     params: &PowersOfTau<E>,
 ) -> Result<PairingOutput<E>, SteError> {
     let n = agg_key.pk.len();
+    let t = ct.t;
     
     // Validate inputs
     if partial_decryptions.len() != n {
@@ -77,6 +78,36 @@ pub fn agg_dec<E: Pairing>(
     if !n.is_power_of_two() {
         return Err(SteError::InvalidParameter(
             format!("n must be a power of 2, got {}", n)
+        ));
+    }
+    
+    // Validate selector: count selected parties
+    let num_selected = selector.iter().filter(|&&selected| selected).count();
+    
+    // Party 0 (dummy party) must always be selected
+    if !selector.first().copied().unwrap_or(false) {
+        return Err(SteError::ValidationError(
+            "Party 0 (dummy party) must always be selected".to_string()
+        ));
+    }
+    
+    // Must have at least t+1 parties selected (including dummy party) for threshold t
+    if num_selected < t + 1 {
+        return Err(SteError::ValidationError(
+            format!(
+                "Insufficient parties selected: need at least {} parties (threshold t={}), but only {} selected",
+                t + 1, t, num_selected
+            )
+        ));
+    }
+    
+    // Cannot have more than n parties selected
+    if num_selected > n {
+        return Err(SteError::ValidationError(
+            format!(
+                "Too many parties selected: {} selected, but only {} parties exist",
+                num_selected, n
+            )
         ));
     }
     
@@ -252,7 +283,7 @@ mod tests {
         debug_assert!(t < n);
 
         let tau = Fr::rand(&mut rng);
-        let params = KZG10::<E, UniPoly381>::setup(n, tau.clone()).unwrap();
+        let params = KZG10::<E, UniPoly381>::setup(n, tau).unwrap();
 
         let mut sk: Vec<SecretKey<E>> = Vec::new();
         let mut pk: Vec<PublicKey<E>> = Vec::new();
@@ -272,8 +303,8 @@ mod tests {
 
         // compute partial decryptions
         let mut partial_decryptions: Vec<G2> = Vec::new();
-        for i in 0..t + 1 {
-            partial_decryptions.push(sk[i].partial_decryption(&ct));
+        for sk_i in sk.iter().take(t + 1) {
+            partial_decryptions.push(sk_i.partial_decryption(&ct));
         }
         for _ in t + 1..n {
             partial_decryptions.push(G2::zero());
@@ -281,12 +312,8 @@ mod tests {
 
         // compute the decryption key
         let mut selector: Vec<bool> = Vec::new();
-        for _ in 0..t + 1 {
-            selector.push(true);
-        }
-        for _ in t + 1..n {
-            selector.push(false);
-        }
+        selector.extend(std::iter::repeat_n(true, t + 1));
+        selector.extend(std::iter::repeat_n(false, n - t - 1));
 
         let _dec_key = agg_dec(&partial_decryptions, &ct, &selector, &agg_key, &params).unwrap();
     }

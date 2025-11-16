@@ -62,7 +62,7 @@ impl<E: Pairing> LagrangePowers<E> {
             li_evals_x[i] = li_evals_minus0[i] * tau_inv;
         }
 
-        let z_eval = tau.pow(&[n as u64]) - E::ScalarField::one();
+        let z_eval = tau.pow([n as u64]) - E::ScalarField::one();
         let z_eval_inv = z_eval.inverse()
             .ok_or_else(|| SteError::InvalidParameter("z_eval inverse computation failed".to_string()))?;
 
@@ -374,8 +374,8 @@ mod tests {
         let mut rng = ark_std::test_rng();
         let n = 16;
         let tau = Fr::rand(&mut rng);
-        let params = KZG10::<E, UniPoly381>::setup(n, tau.clone()).unwrap();
-        let lagrange_params = LagrangePowers::<E>::new(tau, n).unwrap();
+        let params = KZG10::<E, UniPoly381>::setup(n, tau).unwrap();
+        let lagrange_params = LagrangePowers::<E>::new(Fr::rand(&mut rng), n).unwrap();
 
         let mut sk: Vec<SecretKey<E>> = Vec::new();
         let mut pk: Vec<PublicKey<E>> = Vec::new();

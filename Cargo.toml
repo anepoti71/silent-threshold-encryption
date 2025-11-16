@@ -17,6 +17,8 @@ rayon = { version = "1.5.1" }
 
 [features]
 asm = ["ark-ff/asm"]
+parallel = ["ark-std/parallel", "ark-ec/parallel", "ark-ff/parallel", "ark-poly/parallel"]
+default = []
 
 [profile.dev]
 opt-level = 3

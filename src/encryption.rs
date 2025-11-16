@@ -171,7 +171,7 @@ mod tests {
         let mut rng = ark_std::test_rng();
         let n = 8;
         let tau = Fr::rand(&mut rng);
-        let params = KZG10::<E, UniPoly381>::setup(n, tau.clone()).unwrap();
+        let params = KZG10::<E, UniPoly381>::setup(n, tau).unwrap();
 
         let mut sk: Vec<SecretKey<E>> = Vec::new();
         let mut pk: Vec<PublicKey<E>> = Vec::new();
