@@ -43,20 +43,20 @@
 //!
 //! Build with distributed feature:
 //! ```bash
-//! cargo build --example distributed_protocol --features distributed
+//! cargo build --bin distributed_protocol --features distributed --release
 //! ```
 //!
 //! Run the coordinator (in one terminal):
 //! ```bash
-//! cargo run --example distributed_protocol --features distributed -- coordinator --port 8080 --parties 4 --threshold 2
+//! cargo run --bin distributed_protocol --features distributed --release -- coordinator --port 8080 --parties 4 --threshold 2
 //! ```
 //!
 //! Run each party (in separate terminals):
 //! ```bash
-//! cargo run --example distributed_protocol --features distributed -- party --id 0 --coordinator localhost:8080
-//! cargo run --example distributed_protocol --features distributed -- party --id 1 --coordinator localhost:8080
-//! cargo run --example distributed_protocol --features distributed -- party --id 2 --coordinator localhost:8080
-//! cargo run --example distributed_protocol --features distributed -- party --id 3 --coordinator localhost:8080
+//! cargo run --bin distributed_protocol --features distributed --release -- party --id 0 --coordinator localhost:8080
+//! cargo run --bin distributed_protocol --features distributed --release -- party --id 1 --coordinator localhost:8080
+//! cargo run --bin distributed_protocol --features distributed --release -- party --id 2 --coordinator localhost:8080
+//! cargo run --bin distributed_protocol --features distributed --release -- party --id 3 --coordinator localhost:8080
 //! ```
 
 #[cfg(feature = "distributed")]
@@ -660,7 +660,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(not(feature = "distributed"))]
 fn main() {
-    eprintln!("This example requires the 'distributed' feature.");
-    eprintln!("Run with: cargo run --example distributed_protocol --features distributed");
+    eprintln!("This binary requires the 'distributed' feature.");
+    eprintln!("Run with: cargo run --bin distributed_protocol --features distributed");
     std::process::exit(1);
 }

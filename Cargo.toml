@@ -45,3 +45,8 @@ harness = false
 [[bench]]
 name = "setup"
 harness = false
+
+[[bin]]
+name = "distributed_protocol"
+path = "src/bin/distributed_protocol.rs"
+required-features = ["distributed"]

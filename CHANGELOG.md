@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fixed incorrect party ID usage in `encryption.rs` test (was using ID 0 for all parties instead of `i`)
-- Fixed missing error handling in `endtoend.rs` example:
+- Fixed missing error handling in examples:
   - Added `.unwrap()` calls for `LagrangePowers::new()`
   - Added `.unwrap()` calls for `lagrange_get_pk()`
   - Added `.unwrap()` calls for `AggregateKey::new()`

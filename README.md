@@ -4,14 +4,350 @@
 
 Rust implementation of the silent-threshold encryption introduced in [ePrint:2024/263](https://eprint.iacr.org/2024/263). Benchmarks reported in the paper were run on a 2019 MacBook Pro with a 2.4 GHz Intel Core i9 processor. The library has been confirmed to work with version 1.76.0 of the Rust compiler.
 
-An end-to-end example is provided in the `examples/` directory.
+A distributed protocol implementation is provided as a binary in `src/bin/distributed_protocol.rs`.
 
 ## Client Implementations
 
-- **Native Client** ([`client/`](client/)): Rust command-line demo application
 - **WebAssembly Client** ([`wasm-client/`](wasm-client/)): Browser-based distributed client for web applications
 
 The WASM client enables threshold encryption in web browsers, allowing parties to participate in the protocol from anywhere with a modern browser.
+
+- **Distributed Protocol Test** ([`test_distributed_simple.sh`](test_distributed_simple.sh)): Simple test script for the distributed protocol example
+
+## Distributed Protocol Quickstart
+
+This guide shows you how to run a complete distributed threshold encryption system with a coordinator and multiple parties.
+
+### Quick Demo (Automated)
+
+The fastest way to see the distributed protocol in action:
+
+```bash
+# Run the simple test script (4 parties, threshold 2)
+./test_distributed_simple.sh
+```
+
+This script will:
+1. Build the distributed protocol binary
+2. Start the coordinator
+3. Start all party clients
+4. Run the complete protocol
+5. Show you the output
+6. Save logs to `test_logs/` directory
+
+### Manual Setup (Step-by-Step)
+
+For more control, run each component manually:
+
+#### Step 1: Build
+
+```bash
+cargo build --bin distributed_protocol --features distributed --release
+```
+
+#### Step 2: Start Coordinator (Terminal 1)
+
+```bash
+./target/release/distributed_protocol coordinator \
+    --port 8080 \
+    --parties 4 \
+    --threshold 2
+```
+
+You'll see:
+```
+🔧 Coordinator: Initializing with n=4, t=2
+🔧 Coordinator: Setting up KZG parameters...
+🔧 Coordinator: Preprocessing Lagrange powers...
+✓ Coordinator: Setup complete
+🌐 Coordinator: Listening on 127.0.0.1:8080
+⏳ Coordinator: Waiting for 4 parties to connect...
+```
+
+#### Step 3: Start Parties (Terminals 2-5)
+
+Open 4 new terminals and run one command in each:
+
+**Terminal 2 (Party 0):**
+```bash
+./target/release/distributed_protocol party \
+    --id 0 \
+    --coordinator localhost:8080
+```
+
+**Terminal 3 (Party 1):**
+```bash
+./target/release/distributed_protocol party \
+    --id 1 \
+    --coordinator localhost:8080
+```
+
+**Terminal 4 (Party 2):**
+```bash
+./target/release/distributed_protocol party \
+    --id 2 \
+    --coordinator localhost:8080
+```
+
+**Terminal 5 (Party 3):**
+```bash
+./target/release/distributed_protocol party \
+    --id 3 \
+    --coordinator localhost:8080
+```
+
+#### Step 4: Watch the Protocol Execute
+
+Once all parties connect, you'll see the protocol execute automatically:
+
+**Coordinator Output:**
+```
+✓ Coordinator: Party 0 connected from 127.0.0.1:xxxxx
+✓ Coordinator: Party 1 connected from 127.0.0.1:xxxxx
+✓ Coordinator: Party 2 connected from 127.0.0.1:xxxxx
+✓ Coordinator: Party 3 connected from 127.0.0.1:xxxxx
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Phase 1: Key Generation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ Coordinator: Received public key from party 0
+✓ Coordinator: Received public key from party 1
+✓ Coordinator: Received public key from party 2
+✓ Coordinator: Received public key from party 3
+
+🔧 Coordinator: Computing aggregate key...
+✓ Coordinator: Aggregate key computed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Phase 2: Encryption
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔐 Coordinator: Encrypting message with threshold t=2...
+✓ Coordinator: Ciphertext generated
+  Encrypted key: Fq12(...)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Phase 3: Decryption
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 Coordinator: Selected 3 parties for decryption: [0, 1, 2]
+✓ Coordinator: Received partial decryption from party 0
+✓ Coordinator: Received partial decryption from party 1
+✓ Coordinator: Received partial decryption from party 2
+
+🔓 Coordinator: Aggregating partial decryptions...
+✓ Coordinator: Decryption complete
+  Decrypted key: Fq12(...)
+
+✅ SUCCESS: Decryption successful! Keys match.
+```
+
+**Party Output (each terminal):**
+```
+🎭 Party 1: Initializing
+🌐 Party 1: Connecting to coordinator at localhost:8080
+✓ Party 1: Connected to coordinator
+
+📨 Party 1: Received request for public key
+🔑 Party 1: Generated secret key
+✓ Party 1: Sent public key to coordinator
+
+📨 Party 1: Received request for partial decryption
+✓ Party 1: Sent partial decryption to coordinator
+
+✅ Party 1: Protocol completed successfully
+```
+
+### Example Scenarios
+
+#### Scenario 1: Small Committee (4 parties, need 3 to decrypt)
+
+```bash
+# Terminal 1
+./target/release/distributed_protocol coordinator --parties 4 --threshold 2
+
+# Terminals 2-5 (run in parallel)
+./target/release/distributed_protocol party --id 0 --coordinator localhost:8080 &
+./target/release/distributed_protocol party --id 1 --coordinator localhost:8080 &
+./target/release/distributed_protocol party --id 2 --coordinator localhost:8080 &
+./target/release/distributed_protocol party --id 3 --coordinator localhost:8080 &
+wait
+```
+
+#### Scenario 2: Board of Directors (8 parties, need majority)
+
+```bash
+# Coordinator
+./target/release/distributed_protocol coordinator --parties 8 --threshold 4
+
+# Start 8 parties (in separate terminals or background)
+for i in {0..7}; do
+    ./target/release/distributed_protocol party --id $i --coordinator localhost:8080 &
+done
+wait
+```
+
+#### Scenario 3: Large Organization (16 parties, high threshold)
+
+```bash
+# Coordinator
+./target/release/distributed_protocol coordinator --parties 16 --threshold 10
+
+# Start 16 parties
+for i in {0..15}; do
+    ./target/release/distributed_protocol party --id $i --coordinator localhost:8080 &
+done
+wait
+```
+
+### Running on Different Machines
+
+To run the coordinator and parties on different computers:
+
+**On Machine A (Coordinator):**
+
+1. Find your IP address:
+   ```bash
+   # Linux/Mac
+   ifconfig | grep "inet "
+   # Or
+   hostname -I
+   ```
+
+2. Start coordinator (bind to all interfaces):
+   ```bash
+   # Edit the code to bind to 0.0.0.0 instead of 127.0.0.1, or use SSH tunneling
+   ./target/release/distributed_protocol coordinator --port 8080 --parties 4 --threshold 2
+   ```
+
+3. Make sure firewall allows port 8080
+
+**On Machines B, C, D, E (Parties):**
+
+```bash
+# Replace 192.168.1.100 with actual coordinator IP
+./target/release/distributed_protocol party --id 0 --coordinator 192.168.1.100:8080
+./target/release/distributed_protocol party --id 1 --coordinator 192.168.1.100:8080
+./target/release/distributed_protocol party --id 2 --coordinator 192.168.1.100:8080
+./target/release/distributed_protocol party --id 3 --coordinator 192.168.1.100:8080
+```
+
+### Using tmux for Multiple Terminals
+
+If you want to run everything in one window:
+
+```bash
+# Install tmux if needed
+# Ubuntu/Debian: apt-get install tmux
+# Mac: brew install tmux
+
+# Start a tmux session
+tmux new -s ste
+
+# Create panes (Ctrl+b, %)
+# Split horizontally: Ctrl+b %
+# Split vertically: Ctrl+b "
+# Navigate: Ctrl+b <arrow keys>
+
+# In first pane (coordinator)
+./target/release/distributed_protocol coordinator --parties 4 --threshold 2
+
+# In other panes (parties)
+./target/release/distributed_protocol party --id 0 --coordinator localhost:8080
+./target/release/distributed_protocol party --id 1 --coordinator localhost:8080
+./target/release/distributed_protocol party --id 2 --coordinator localhost:8080
+./target/release/distributed_protocol party --id 3 --coordinator localhost:8080
+
+# Detach: Ctrl+b d
+# Reattach: tmux attach -t ste
+# Kill session: tmux kill-session -t ste
+```
+
+### Checking Logs
+
+After running with the test script, check the logs:
+
+```bash
+cd test_logs
+
+# Coordinator log
+cat coordinator.log
+
+# Party logs
+cat party_0.log
+cat party_1.log
+cat party_2.log
+cat party_3.log
+
+# Or view all together
+tail -f coordinator.log party_*.log
+```
+
+### Performance Testing
+
+Test with different configurations by modifying the test script or using manual setup:
+
+```bash
+# Test with default settings
+time ./test_distributed_simple.sh
+
+# For custom configurations, modify the script or use manual setup
+```
+
+### Troubleshooting
+
+#### "Address already in use"
+
+Another process is using port 8080:
+
+```bash
+# Find the process
+lsof -i :8080
+
+# Kill it
+kill -9 <PID>
+
+# Or modify the test script to use a different port
+```
+
+#### "Connection refused"
+
+Coordinator not running or wrong address:
+
+1. Make sure coordinator starts first
+2. Check coordinator is listening: `netstat -an | grep 8080`
+3. Verify correct hostname/IP
+4. Check firewall settings
+
+#### "Not enough parties"
+
+Make sure you start exactly `n` parties with IDs `0` to `n-1`.
+
+#### Parties stuck "Connecting..."
+
+- Coordinator may not be ready
+- Wrong address/port
+- Firewall blocking connection
+
+**Solution**:
+1. Start coordinator first
+2. Wait for "Listening on..." message
+3. Then start parties
+
+### Protocol Flow
+
+1. **Setup**: Coordinator generates KZG parameters and Lagrange precomputation
+2. **Connection**: Each party connects via TCP to coordinator
+3. **Key Gen**:
+   - Coordinator sends `tau` parameter to each party
+   - Each party generates their secret/public key pair
+   - Parties send public keys back to coordinator
+4. **Aggregation**: Coordinator computes aggregate public key from all party public keys
+5. **Encryption**: Coordinator encrypts a message using the aggregate key
+6. **Selection**: Coordinator selects t+1 parties (including party 0) for decryption
+7. **Partial Dec**: Selected parties compute and send partial decryptions
+8. **Final Dec**: Coordinator aggregates partial decryptions and recovers the key
+9. **Verification**: Check if decrypted key matches original encrypted key
+
+⚠️ **Note**: The distributed protocol uses unencrypted TCP connections. For production, use TLS/SSL, authenticate parties, use distributed trusted setup, validate all messages, and implement rate limiting. See the [Security Considerations](#security-considerations) section for more details.
 
 ## Dependencies
 Install rust via:
@@ -23,7 +359,7 @@ The library can be built using ```cargo build --release```.
 
 Use ```cargo bench``` to benchmark `setup` (KeyGen in the paper), `encryption`, and `decryption`. This is expected to take approximately 20 minutes. To run a specific benchmark, use ```cargo bench --bench <bench_name>```.
 
-Use ```cargo run --example endtoend``` to check correctness of the implementation.
+Use ```./test_distributed_simple.sh``` to test the distributed protocol implementation. See the [Distributed Protocol Quickstart](#distributed-protocol-quickstart) section for detailed instructions.
 
 The results are saved in the `target/criterion` directory. A concise HTML report is generated in `target/criterion/index.html` and can be viewed on a browser (Google Chrome recommended).
 
@@ -40,14 +376,13 @@ This fork includes the following improvements over the original implementation:
 
 ### Bug Fixes
 - Fixed incorrect party ID usage in encryption test (was using ID 0 for all parties)
-- Fixed missing error handling in `endtoend.rs` example
+- Fixed missing error handling in examples
 - Fixed redundant error check in `LagrangePowers::new`
 - Improved type conversions for better precision (u32 → u64 for large values)
 
 ### Performance Optimizations
 - **Batch Public Key Generation**: Added `batch_lagrange_get_pk` method that uses parallel processing to generate all public keys efficiently
 - Optimized MSM operations by reducing code duplication and reusing buffers
-- The client demo now uses batch generation for better performance with multiple parties
 
 ### Code Quality
 - Extracted magic numbers to named constants (`SA1_SIZE`, `SA2_SIZE`, `ENCRYPTION_RANDOMNESS_SIZE`)
@@ -75,7 +410,6 @@ This fork includes the following improvements over the original implementation:
 **⚠️ CRITICAL:** This implementation is an academic proof-of-concept prototype and has **NOT** received comprehensive security auditing. It is **NOT ready for production use** and should **NOT** be used to protect sensitive data in real-world applications without thorough security review.
 
 ### Random Number Generation
-- **Client Application**: The client demo (`client/`) uses cryptographically secure OS-backed random number generation (`SecureRng`) seeded from the operating system via `OsRng`.
 - **Library Functions**: When using the library directly, ensure you provide a cryptographically secure RNG. **Never use deterministic or predictable RNGs** (like `test_rng()`) in production.
 - Always use `rand::rngs::OsRng` when generating seeds for RNGs. OsRng directly sources entropy from the operating system's secure random number generator (e.g., `/dev/urandom` on Unix, `BCryptGenRandom` on Windows, `getrandom()` system call on Linux).
 
@@ -167,7 +501,7 @@ For production systems, you should:
 
 #### Current Implementation Status
 
-⚠️ **WARNING**: The demo client (`client/`) currently uses a **single-party** setup for simplicity:
+⚠️ **WARNING**: The examples currently use a **single-party** setup for simplicity:
 ```rust
 // INSECURE FOR PRODUCTION - Demo/test only
 let tau = Fr::rand(&mut rng);

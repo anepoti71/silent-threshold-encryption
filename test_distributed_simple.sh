@@ -11,12 +11,12 @@ echo -e "${GREEN}Testing Distributed Silent Threshold Encryption${NC}"
 echo ""
 
 # Check if release binary exists
-BINARY_PATH="./target/release/examples/distributed_protocol"
+BINARY_PATH="./target/release/distributed_protocol"
 if [ ! -f "$BINARY_PATH" ]; then
     echo -e "${RED}Error: Release binary not found at $BINARY_PATH${NC}"
     echo ""
-    echo -e "${YELLOW}Please build the example first:${NC}"
-    echo -e "${GREEN}cargo build --example distributed_protocol --features distributed --release${NC}"
+    echo -e "${YELLOW}Please build the binary first:${NC}"
+    echo -e "${GREEN}cargo build --bin distributed_protocol --features distributed --release${NC}"
     echo ""
     exit 1
 fi
@@ -31,7 +31,7 @@ rm -f test_logs/*.log
 
 # Start coordinator in background
 echo -e "${YELLOW}Starting coordinator...${NC}"
-./target/release/examples/distributed_protocol coordinator \
+./target/release/distributed_protocol coordinator \
     --port 9999 --parties 4 --threshold 2 \
     > test_logs/coordinator.log 2>&1 &
 COORD_PID=$!
@@ -50,7 +50,7 @@ echo -e "${GREEN}✓ Coordinator running (PID: $COORD_PID)${NC}"
 # Start parties in background
 for i in {0..3}; do
     echo -e "${YELLOW}Starting party $i...${NC}"
-    ./target/release/examples/distributed_protocol party \
+    ./target/release/distributed_protocol party \
         --id $i --coordinator localhost:9999 \
         > test_logs/party_$i.log 2>&1 &
     PARTY_PIDS[$i]=$!

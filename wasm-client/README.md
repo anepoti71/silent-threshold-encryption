@@ -324,4 +324,4 @@ Contributions are welcome! Please ensure:
 
 - Main library: `../`
 - Rust implementation: `../src/`
-- Native client: `../client/`
+- Distributed protocol test: `../test_distributed_simple.sh`
