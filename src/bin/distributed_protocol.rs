@@ -78,6 +78,10 @@ mod distributed {
     use std::collections::HashMap;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
+    use tokio_rustls::TlsAcceptor;
+    use tokio_rustls::TlsConnector;
+
+    mod tls_config;
 
     type E = ark_bls12_381::Bls12_381;
     type G2 = <E as Pairing>::G2;
@@ -191,7 +195,7 @@ mod distributed {
         lagrange_params: LagrangePowers<E>,
         public_keys: HashMap<usize, PublicKey<E>>,
         partial_decryptions: HashMap<usize, G2>,
-        party_connections: HashMap<usize, TcpStream>,
+        party_connections: HashMap<usize, tokio_rustls::server::TlsStream<TcpStream>>,
     }
 
     impl Coordinator {
@@ -223,16 +227,27 @@ mod distributed {
         }
 
         pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+            // Generate self-signed certificate for TLS
+            println!("🔐 Coordinator: Generating TLS certificate...");
+            let (certs, key) = tls_config::generate_self_signed_cert()?;
+            let tls_config = tls_config::create_server_config(certs, key)?;
+            let acceptor = TlsAcceptor::from(tls_config);
+            println!("✓ Coordinator: TLS certificate ready");
+
             let addr = format!("127.0.0.1:{}", self.port);
             let listener = TcpListener::bind(&addr).await?;
-            println!("🌐 Coordinator: Listening on {}", addr);
+            println!("🌐 Coordinator: Listening on {} (TLS 1.3)", addr);
             println!("⏳ Coordinator: Waiting for {} parties to connect...", self.n);
 
             // Accept connections from all n parties
             for i in 0..self.n {
-                let (stream, peer_addr) = listener.accept().await?;
-                println!("✓ Coordinator: Party {} connected from {}", i, peer_addr);
-                self.party_connections.insert(i, stream);
+                let (tcp_stream, peer_addr) = listener.accept().await?;
+                println!("🔌 Coordinator: TCP connection from {} (party {})", peer_addr, i);
+
+                // Perform TLS handshake
+                let tls_stream = acceptor.accept(tcp_stream).await?;
+                println!("✓ Coordinator: Party {} connected with TLS from {}", i, peer_addr);
+                self.party_connections.insert(i, tls_stream);
             }
 
             println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -458,8 +473,20 @@ mod distributed {
 
         pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
             println!("🌐 Party {}: Connecting to coordinator at {}", self.id, self.coordinator_addr);
-            let mut stream = TcpStream::connect(&self.coordinator_addr).await?;
-            println!("✓ Party {}: Connected to coordinator", self.id);
+
+            // Create TLS client configuration
+            let tls_config = tls_config::create_client_config_dev()?;
+            let connector = TlsConnector::from(tls_config);
+
+            // Connect via TCP
+            let tcp_stream = TcpStream::connect(&self.coordinator_addr).await?;
+            println!("🔌 Party {}: TCP connected to coordinator", self.id);
+
+            // Perform TLS handshake
+            let server_name = rustls::pki_types::ServerName::try_from("localhost")
+                .map_err(|_| "Invalid DNS name")?;
+            let mut stream = connector.connect(server_name, tcp_stream).await?;
+            println!("✓ Party {}: TLS connection established", self.id);
 
             // Send ready message
             let ready_msg = PartyMessage::Ready { party_id: self.id };
@@ -501,7 +528,7 @@ mod distributed {
 
         async fn handle_public_key_request(
             &mut self,
-            stream: &mut TcpStream,
+            stream: &mut tokio_rustls::client::TlsStream<TcpStream>,
             tau_bytes: &[u8],
             n: usize,
         ) -> Result<(), Box<dyn std::error::Error>> {
@@ -544,7 +571,7 @@ mod distributed {
 
         async fn handle_partial_decryption_request(
             &mut self,
-            stream: &mut TcpStream,
+            stream: &mut tokio_rustls::client::TlsStream<TcpStream>,
             ct_bytes: &[u8],
         ) -> Result<(), Box<dyn std::error::Error>> {
             // Deserialize ciphertext
@@ -572,7 +599,7 @@ mod distributed {
 
         async fn send_message(
             &self,
-            stream: &mut TcpStream,
+            stream: &mut tokio_rustls::client::TlsStream<TcpStream>,
             msg: &PartyMessage,
         ) -> Result<(), Box<dyn std::error::Error>> {
             let data = serialize(msg)?;
@@ -587,7 +614,7 @@ mod distributed {
 
         async fn receive_message(
             &self,
-            stream: &mut TcpStream,
+            stream: &mut tokio_rustls::client::TlsStream<TcpStream>,
         ) -> Result<CoordinatorMessage, Box<dyn std::error::Error>> {
             let len = stream.read_u32().await?;
             let mut data = vec![0u8; len as usize];

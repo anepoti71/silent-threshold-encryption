@@ -3,6 +3,9 @@
 //! This module provides JavaScript bindings for the silent threshold encryption scheme,
 //! allowing browser-based clients to participate in distributed threshold encryption.
 
+mod distributed_party;
+pub use distributed_party::*;
+
 use wasm_bindgen::prelude::*;
 use ark_bls12_381::Bls12_381 as E;
 use ark_ec::pairing::Pairing;
@@ -40,7 +43,7 @@ macro_rules! console_log {
 }
 
 /// WebAssembly-friendly RNG using browser's crypto.getRandomValues
-struct WasmRng;
+pub(crate) struct WasmRng;
 
 impl RngCore for WasmRng {
     fn next_u32(&mut self) -> u32 {

@@ -35,6 +35,11 @@ features = [
     "console",
     "Window",
     "Performance",
+    "WebSocket",
+    "MessageEvent",
+    "ErrorEvent",
+    "CloseEvent",
+    "BinaryType",
 ]
 
 [profile.release]
