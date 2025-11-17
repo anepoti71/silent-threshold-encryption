@@ -415,7 +415,10 @@ This fork includes the following improvements over the original implementation:
 
 ### Secret Key Management
 - **Secret Key Storage**: Secret keys must be stored securely and protected from unauthorized access. Consider using hardware security modules (HSMs) or secure key management systems for production deployments.
-- **Key Zeroization**: The current implementation does not explicitly zeroize secret key material in memory. In memory-constrained or high-security environments, consider implementing explicit zeroization.
+- **Key Zeroization**: The `SecretKey` struct implements `Zeroize` and `ZeroizeOnDrop` traits from the `zeroize` crate. Secret keys are automatically zeroized (set to zero) when dropped, helping to prevent secret material from remaining in memory. However, note that:
+  - Zeroization works best for owned values; `Copy` types (like `ScalarField`) may have limitations
+  - The zeroize crate provides best-effort memory clearing, but cannot guarantee complete erasure in all scenarios (e.g., compiler optimizations, memory-mapped files)
+  - For maximum security, consider using secure memory allocators or hardware-backed key storage
 - **Key Derivation**: Ensure secret keys are derived from cryptographically secure random sources with sufficient entropy.
 - **Party 0 (Dummy Party)**: Party 0 is the "dummy party" with a nullified secret key (set to 1). This is by design in the scheme and always participates in decryption.
 

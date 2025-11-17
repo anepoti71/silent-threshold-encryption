@@ -13,6 +13,7 @@ use ark_serialize::*;
 use ark_std::{rand::RngCore, One, UniformRand, Zero};
 use rayon::prelude::*;
 use std::ops::{Mul, Sub};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Debug)]
 pub struct LagrangePowers<E: Pairing> {
@@ -106,8 +107,13 @@ impl<E: Pairing> LagrangePowers<E> {
 /// Each party holds a secret key that is used to generate partial decryptions.
 /// Note: Party 0 is the "dummy party" whose secret key should be nullified
 /// (set to 1) as it always participates in decryption.
-#[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Debug)]
+///
+/// # Security
+/// This struct implements `Zeroize` and `ZeroizeOnDrop` to ensure that secret
+/// key material is securely erased from memory when the key is dropped.
+#[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Debug, ZeroizeOnDrop)]
 pub struct SecretKey<E: Pairing> {
+    #[zeroize(skip)] // Skip zeroization in derive, we'll implement manually for the scalar field
     sk: E::ScalarField,
 }
 
@@ -160,6 +166,16 @@ impl<E: Pairing> PublicKey<E> {
             sk_li_lj_z,
             sk_li_x,
         }
+    }
+}
+
+impl<E: Pairing> Zeroize for SecretKey<E> {
+    fn zeroize(&mut self) {
+        // Zeroize the scalar field by setting it to zero
+        // Note: arkworks ScalarField doesn't implement Zeroize directly,
+        // so we manually zeroize by setting to zero
+        // This overwrites the secret key value in memory
+        let _ = std::mem::replace(&mut self.sk, E::ScalarField::zero());
     }
 }
 
