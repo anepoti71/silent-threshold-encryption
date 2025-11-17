@@ -8,13 +8,13 @@ use ark_bls12_381::Bls12_381 as E;
 use ark_ec::pairing::Pairing;
 use ark_poly::univariate::DensePolynomial;
 use ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
-use ark_std::rand::RngCore;
+use ark_std::{rand::RngCore, UniformRand};
 use silent_threshold_encryption::{
     setup::{SecretKey, PublicKey, LagrangePowers, AggregateKey},
     encryption::{encrypt, Ciphertext},
     decryption::agg_dec,
     kzg::{KZG10, PowersOfTau},
-    trusted_setup::{Ceremony, Contribution},
+    trusted_setup::Ceremony,
 };
 use serde::{Serialize, Deserialize};
 
@@ -44,24 +44,24 @@ struct WasmRng;
 
 impl RngCore for WasmRng {
     fn next_u32(&mut self) -> u32 {
-        let mut bytes = [0u8; 4];
-        getrandom::getrandom(&mut bytes).expect("Failed to get random bytes");
-        u32::from_le_bytes(bytes)
+        getrandom::u32().expect("Failed to get random u32")
     }
 
     fn next_u64(&mut self) -> u64 {
-        let mut bytes = [0u8; 8];
-        getrandom::getrandom(&mut bytes).expect("Failed to get random bytes");
-        u64::from_le_bytes(bytes)
+        getrandom::u64().expect("Failed to get random u64")
     }
 
     fn fill_bytes(&mut self, dest: &mut [u8]) {
-        getrandom::getrandom(dest).expect("Failed to get random bytes");
+        getrandom::fill(dest).expect("Failed to get random bytes");
     }
 
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), ark_std::rand::Error> {
-        self.fill_bytes(dest);
-        Ok(())
+        match getrandom::fill(dest) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(ark_std::rand::Error::from(
+                core::num::NonZero::new(1u32).unwrap()
+            )),
+        }
     }
 }
 
@@ -258,13 +258,15 @@ impl Coordinator {
     }
 
     /// Create aggregate key from public keys
+    /// 
+    /// public_keys_bytes should be a JavaScript array of Uint8Array
     #[wasm_bindgen(js_name = createAggregateKey)]
-    pub fn create_aggregate_key(&self, public_keys_bytes: Vec<Vec<u8>>) -> Result<Vec<u8>, JsValue> {
-        if public_keys_bytes.len() != self.n {
+    pub fn create_aggregate_key(&self, public_keys_bytes: &js_sys::Array) -> Result<Vec<u8>, JsValue> {
+        if public_keys_bytes.length() as usize != self.n {
             return Err(JsValue::from_str(&format!(
                 "Expected {} public keys, got {}",
                 self.n,
-                public_keys_bytes.len()
+                public_keys_bytes.length()
             )));
         }
 
@@ -272,9 +274,12 @@ impl Coordinator {
             .map_err(|e| JsValue::from_str(&format!("Failed to deserialize KZG params: {:?}", e)))?;
 
         let mut pks = Vec::new();
-        for pk_bytes in public_keys_bytes {
+        for i in 0..public_keys_bytes.length() {
+            let pk_js = public_keys_bytes.get(i);
+            let pk_bytes: Vec<u8> = serde_wasm_bindgen::from_value(pk_js)
+                .map_err(|e| JsValue::from_str(&format!("Failed to convert public key {}: {:?}", i, e)))?;
             let pk = PublicKey::<E>::deserialize_compressed(&*pk_bytes)
-                .map_err(|e| JsValue::from_str(&format!("Failed to deserialize public key: {:?}", e)))?;
+                .map_err(|e| JsValue::from_str(&format!("Failed to deserialize public key {}: {:?}", i, e)))?;
             pks.push(pk);
         }
 
@@ -309,27 +314,30 @@ impl Coordinator {
     }
 
     /// Aggregate decrypt using partial decryptions
+    /// 
+    /// partial_decryptions_bytes should be a JavaScript array of Uint8Array
+    /// selector should be a JavaScript array of booleans
     #[wasm_bindgen(js_name = aggregateDecrypt)]
     pub fn aggregate_decrypt(
         &self,
         ciphertext_bytes: &[u8],
-        partial_decryptions_bytes: Vec<Vec<u8>>,
-        selector: Vec<bool>,
+        partial_decryptions_bytes: &js_sys::Array,
+        selector: &js_sys::Array,
         agg_key_bytes: &[u8],
     ) -> Result<Vec<u8>, JsValue> {
-        if partial_decryptions_bytes.len() != self.n {
+        if partial_decryptions_bytes.length() as usize != self.n {
             return Err(JsValue::from_str(&format!(
                 "Expected {} partial decryptions, got {}",
                 self.n,
-                partial_decryptions_bytes.len()
+                partial_decryptions_bytes.length()
             )));
         }
 
-        if selector.len() != self.n {
+        if selector.length() as usize != self.n {
             return Err(JsValue::from_str(&format!(
                 "Expected selector of length {}, got {}",
                 self.n,
-                selector.len()
+                selector.length()
             )));
         }
 
@@ -343,13 +351,24 @@ impl Coordinator {
             .map_err(|e| JsValue::from_str(&format!("Failed to deserialize KZG params: {:?}", e)))?;
 
         let mut partial_decs = Vec::new();
-        for pd_bytes in partial_decryptions_bytes {
+        for i in 0..partial_decryptions_bytes.length() {
+            let pd_js = partial_decryptions_bytes.get(i);
+            let pd_bytes: Vec<u8> = serde_wasm_bindgen::from_value(pd_js)
+                .map_err(|e| JsValue::from_str(&format!("Failed to convert partial decryption {}: {:?}", i, e)))?;
             let pd = <E as Pairing>::G2::deserialize_compressed(&*pd_bytes)
-                .map_err(|e| JsValue::from_str(&format!("Failed to deserialize partial decryption: {:?}", e)))?;
+                .map_err(|e| JsValue::from_str(&format!("Failed to deserialize partial decryption {}: {:?}", i, e)))?;
             partial_decs.push(pd);
         }
 
-        let dec_key = agg_dec(&partial_decs, &ct, &selector, &agg_key, &kzg_params)
+        // Convert selector from JS array to Vec<bool>
+        let mut selector_vec = Vec::new();
+        for i in 0..selector.length() {
+            let val = selector.get(i);
+            let bool_val: bool = val.as_bool().unwrap_or(false);
+            selector_vec.push(bool_val);
+        }
+
+        let dec_key = agg_dec(&partial_decs, &ct, &selector_vec, &agg_key, &kzg_params)
             .map_err(|e| JsValue::from_str(&format!("Failed to aggregate decrypt: {:?}", e)))?;
 
         let mut dec_key_bytes = Vec::new();
@@ -531,7 +550,7 @@ pub fn coordinator_from_trusted_setup(
         return Err(JsValue::from_str("n must be a power of 2"));
     }
 
-    let kzg_params = PowersOfTau::<E>::deserialize_compressed(kzg_params_bytes)
+    let _kzg_params = PowersOfTau::<E>::deserialize_compressed(kzg_params_bytes)
         .map_err(|e| JsValue::from_str(&format!("Failed to deserialize KZG params: {:?}", e)))?;
 
     // We still need tau to compute Lagrange powers

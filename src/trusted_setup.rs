@@ -46,7 +46,7 @@ pub struct Contribution<E: Pairing> {
 }
 
 /// Ceremony state tracking all contributions
-#[derive(Clone)]
+#[derive(Clone, CanonicalSerialize, CanonicalDeserialize)]
 pub struct Ceremony<E: Pairing> {
     pub max_degree: usize,
     pub contributions: Vec<Contribution<E>>,
