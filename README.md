@@ -2,9 +2,16 @@
 
 > **Note:** This is a fork of the original repository with improvements and bug fixes.
 
-Rust implementation of the silent-threshold encryption introduced in [ePrint:2024/263](https://eprint.iacr.org/2024/263). Benchmarks reported in the paper were run on a 2019 MacBook Pro with a 2.4 GHz Intel Core i9 processor. The library has been confirmed to work with version 1.76.0 of the Rust compiler. 
+Rust implementation of the silent-threshold encryption introduced in [ePrint:2024/263](https://eprint.iacr.org/2024/263). Benchmarks reported in the paper were run on a 2019 MacBook Pro with a 2.4 GHz Intel Core i9 processor. The library has been confirmed to work with version 1.76.0 of the Rust compiler.
 
-An end to end example is provided in the `examples/` directory.
+An end-to-end example is provided in the `examples/` directory.
+
+## Client Implementations
+
+- **Native Client** ([`client/`](client/)): Rust command-line demo application
+- **WebAssembly Client** ([`wasm-client/`](wasm-client/)): Browser-based distributed client for web applications
+
+The WASM client enables threshold encryption in web browsers, allowing parties to participate in the protocol from anywhere with a modern browser.
 
 ## Dependencies
 Install rust via:

@@ -1,0 +1,20 @@
+# WASM build output
+pkg/
+target/
+
+# Cargo lock file
+Cargo.lock
+
+# Node modules (if using npm/yarn for development)
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
