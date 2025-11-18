@@ -78,27 +78,36 @@ pub fn encrypt<E: Pairing, R: RngCore>(
     rng: &mut R,
 ) -> Result<Ciphertext<E>, SteError> {
     let n = apk.pk.len();
-    
+
     // Validate inputs
     if n == 0 {
         return Err(SteError::ValidationError(
-            "number of parties must be at least 1".to_string()
+            "number of parties must be at least 1".to_string(),
         ));
     }
     if t == 0 {
         return Err(SteError::ValidationError(
-            "threshold must be at least 1".to_string()
+            "threshold must be at least 1".to_string(),
         ));
     }
     if t >= n {
-        return Err(SteError::ValidationError(
-            format!("threshold ({}) must be < number of parties ({})", t, n)
-        ));
+        return Err(SteError::ValidationError(format!(
+            "threshold ({}) must be < number of parties ({})",
+            t, n
+        )));
     }
-    if t + 1 > params.powers_of_g.len() {
-        return Err(SteError::ValidationError(
-            format!("t + 1 ({}) exceeds KZG parameters length ({})", t + 1, params.powers_of_g.len())
-        ));
+    if params.powers_of_g.len() <= t + 1 {
+        return Err(SteError::ValidationError(format!(
+            "KZG parameters must contain at least t + 2 powers of g (need {}, have {})",
+            t + 2,
+            params.powers_of_g.len()
+        )));
+    }
+    if params.powers_of_h.len() < 2 {
+        return Err(SteError::ValidationError(format!(
+            "KZG parameters must contain at least 2 powers of h (have {})",
+            params.powers_of_h.len()
+        )));
     }
     let gamma = E::ScalarField::rand(rng);
     let gamma_g2 = params.powers_of_h[0] * gamma;
@@ -109,7 +118,8 @@ pub fn encrypt<E: Pairing, R: RngCore>(
     let mut sa1 = [E::G1::generator(); SA1_SIZE];
     let mut sa2 = [E::G2::generator(); SA2_SIZE];
 
-    let mut s: [E::ScalarField; ENCRYPTION_RANDOMNESS_SIZE] = [E::ScalarField::zero(); ENCRYPTION_RANDOMNESS_SIZE];
+    let mut s: [E::ScalarField; ENCRYPTION_RANDOMNESS_SIZE] =
+        [E::ScalarField::zero(); ENCRYPTION_RANDOMNESS_SIZE];
 
     s.iter_mut()
         .for_each(|s_elem| *s_elem = E::ScalarField::rand(rng));
@@ -156,6 +166,7 @@ mod tests {
     use crate::{
         kzg::KZG10,
         setup::{PublicKey, SecretKey},
+        SteError,
     };
     use ark_poly::univariate::DensePolynomial;
     use ark_std::UniformRand;
@@ -202,5 +213,44 @@ mod tests {
         println!("G1 len: {} bytes", g1_bytes.len());
         println!("G2 len: {} bytes", g2_bytes.len());
         println!("GT len: {} bytes", e_gh_bytes.len());
+    }
+
+    #[test]
+    fn test_encrypt_rejects_insufficient_params() {
+        let mut rng = ark_std::test_rng();
+        let n = 4;
+        let t = 2;
+        let tau = Fr::rand(&mut rng);
+        let params = KZG10::<E, UniPoly381>::setup(n, tau).unwrap();
+
+        let mut sk: Vec<SecretKey<E>> = Vec::new();
+        let mut pk: Vec<PublicKey<E>> = Vec::new();
+
+        for i in 0..n {
+            sk.push(SecretKey::<E>::new(&mut rng));
+            pk.push(sk[i].get_pk(i, &params, n).unwrap())
+        }
+
+        let ak = AggregateKey::<E>::new(pk.clone(), &params).unwrap();
+
+        // Drop the final g power so that index t + 1 is unavailable
+        let mut short_g_params = params.clone();
+        short_g_params.powers_of_g.truncate(t + 1);
+        let err = encrypt::<E, _>(&ak, t, &short_g_params, &mut rng)
+            .expect_err("expected error when powers_of_g are too short");
+        assert!(
+            matches!(err, SteError::ValidationError(ref msg) if msg.contains("t + 2")),
+            "unexpected error: {err:?}"
+        );
+
+        // Drop h powers to ensure we catch that validation as well
+        let mut short_h_params = params.clone();
+        short_h_params.powers_of_h.truncate(1);
+        let err = encrypt::<E, _>(&ak, 1, &short_h_params, &mut rng)
+            .expect_err("expected error when powers_of_h are too short");
+        assert!(
+            matches!(err, SteError::ValidationError(ref msg) if msg.contains("powers of h")),
+            "unexpected error: {err:?}"
+        );
     }
 }

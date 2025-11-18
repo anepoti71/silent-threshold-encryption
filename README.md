@@ -27,15 +27,20 @@ cargo build --bin distributed_protocol --features distributed --release
 
 **Start Coordinator:**
 ```bash
-./target/release/distributed_protocol coordinator --port 8080 --parties 4 --threshold 2
+./target/release/distributed_protocol coordinator \
+    --port 8080 \
+    --parties 4 \
+    --threshold 2 \
+    --cert ./coordinator_cert.pem \
+    --key  ./coordinator_key.pem
 ```
 
 **Start Parties (4 terminals):**
 ```bash
-./target/release/distributed_protocol party --id 0 --coordinator localhost:8080
-./target/release/distributed_protocol party --id 1 --coordinator localhost:8080
-./target/release/distributed_protocol party --id 2 --coordinator localhost:8080
-./target/release/distributed_protocol party --id 3 --coordinator localhost:8080
+./target/release/distributed_protocol party --id 0 --coordinator localhost:8080 --server-cert ./coordinator_cert.pem
+./target/release/distributed_protocol party --id 1 --coordinator localhost:8080 --server-cert ./coordinator_cert.pem
+./target/release/distributed_protocol party --id 2 --coordinator localhost:8080 --server-cert ./coordinator_cert.pem
+./target/release/distributed_protocol party --id 3 --coordinator localhost:8080 --server-cert ./coordinator_cert.pem
 ```
 
 ## Library Usage
@@ -141,12 +146,13 @@ cargo build --features distributed --release
 
 The distributed protocol uses TLS 1.3 for encrypted communication:
 
-- **Auto-generated certificates** for development
+- **Certificate pinning**: Parties can (and by default must) trust a specific coordinator certificate via `--server-cert`
+- **Auto-generated certificates** remain available for local experiments (combine with `--allow-insecure` on parties)
 - **Forward secrecy** with X25519/P-256
 - **Modern ciphers**: AES-GCM, ChaCha20-Poly1305
 - **Production-ready** certificate loading
 
-All cryptographic material (keys, ciphertexts, partial decryptions) is encrypted in transit.
+All cryptographic material (keys, ciphertexts, partial decryptions) is encrypted in transit. For development-only scenarios you can bypass verification with `--allow-insecure`, but this is not recommended.
 
 ## Project Structure
 

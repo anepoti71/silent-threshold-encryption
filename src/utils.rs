@@ -16,7 +16,7 @@ use ark_poly::{
 pub fn lagrange_poly<F: FftField>(n: usize, i: usize) -> DensePolynomial<F> {
     debug_assert!(i < n);
     debug_assert!(n.is_power_of_two());
-    
+
     let mut evals = vec![];
     for j in 0..n {
         let l_of_x: u64 = if i == j { 1 } else { 0 };

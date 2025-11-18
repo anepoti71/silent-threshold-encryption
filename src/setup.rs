@@ -1,8 +1,9 @@
-use ark_ec::pairing::PairingOutput;
 use crate::encryption::Ciphertext;
 use crate::error::SteError;
 use crate::kzg::{PowersOfTau, KZG10};
+use crate::security::SensitiveScalar;
 use crate::utils::lagrange_poly;
+use ark_ec::pairing::PairingOutput;
 use ark_ec::{pairing::Pairing, PrimeGroup};
 use ark_ff::Field;
 use ark_poly::{
@@ -36,23 +37,25 @@ impl<E: Pairing> LagrangePowers<E> {
         // Validate inputs
         if n == 0 {
             return Err(SteError::InvalidParameter(
-                "n must be at least 1".to_string()
+                "n must be at least 1".to_string(),
             ));
         }
         if tau.is_zero() {
             return Err(SteError::InvalidParameter("tau cannot be zero".to_string()));
         }
         if !n.is_power_of_two() {
-            return Err(SteError::InvalidParameter(
-                format!("n must be a power of 2, got {}", n)
-            ));
+            return Err(SteError::InvalidParameter(format!(
+                "n must be a power of 2, got {}",
+                n
+            )));
         }
 
         let mut li_evals: Vec<E::ScalarField> = vec![E::ScalarField::zero(); n];
         let mut li_evals_minus0: Vec<E::ScalarField> = vec![E::ScalarField::zero(); n];
         let mut li_evals_x: Vec<E::ScalarField> = vec![E::ScalarField::zero(); n];
         // Since tau is already validated to be non-zero, inverse should always succeed
-        let tau_inv = tau.inverse()
+        let tau_inv = tau
+            .inverse()
             .expect("tau inverse should exist since tau was validated to be non-zero");
         for i in 0..n {
             let li = lagrange_poly(n, i);
@@ -64,8 +67,9 @@ impl<E: Pairing> LagrangePowers<E> {
         }
 
         let z_eval = tau.pow([n as u64]) - E::ScalarField::one();
-        let z_eval_inv = z_eval.inverse()
-            .ok_or_else(|| SteError::FieldInverseError("z_eval inverse computation failed".to_string()))?;
+        let z_eval_inv = z_eval.inverse().ok_or_else(|| {
+            SteError::FieldInverseError("z_eval inverse computation failed".to_string())
+        })?;
 
         let mut li = vec![E::G1::zero(); n];
         for i in 0..n {
@@ -113,8 +117,7 @@ impl<E: Pairing> LagrangePowers<E> {
 /// key material is securely erased from memory when the key is dropped.
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Debug, ZeroizeOnDrop)]
 pub struct SecretKey<E: Pairing> {
-    #[zeroize(skip)] // Skip zeroization in derive, we'll implement manually for the scalar field
-    sk: E::ScalarField,
+    sk: SensitiveScalar<E::ScalarField>,
 }
 
 /// Public key for a party in the threshold encryption scheme.
@@ -171,18 +174,7 @@ impl<E: Pairing> PublicKey<E> {
 
 impl<E: Pairing> Zeroize for SecretKey<E> {
     fn zeroize(&mut self) {
-        // Zeroize the scalar field by setting it to zero
-        // Note: arkworks ScalarField doesn't implement Zeroize directly,
-        // so we manually zeroize by setting to zero
-        // This overwrites the secret key value in memory
-        self.sk = E::ScalarField::zero();
-
-        // Additional defense: use volatile write to prevent compiler optimization
-        // This ensures the zeroization is not optimized away
-        use core::ptr::write_volatile;
-        unsafe {
-            write_volatile(&mut self.sk as *mut E::ScalarField, E::ScalarField::zero());
-        }
+        self.sk.zeroize();
     }
 }
 
@@ -193,14 +185,14 @@ impl<E: Pairing> SecretKey<E> {
     /// * `rng` - A random number generator
     pub fn new<R: RngCore>(rng: &mut R) -> Self {
         SecretKey {
-            sk: E::ScalarField::rand(rng),
+            sk: SensitiveScalar::new(E::ScalarField::rand(rng)),
         }
     }
 
     /// Nullifies the secret key by setting it to one.
     /// This is used for the dummy party (party 0) which always participates.
     pub fn nullify(&mut self) {
-        self.sk = E::ScalarField::one()
+        self.sk = SensitiveScalar::one()
     }
 
     /// Computes the public key using the slower method (quadratic time).
@@ -216,27 +208,37 @@ impl<E: Pairing> SecretKey<E> {
     ///
     /// # Errors
     /// Returns an error if id >= n, n is not a power of 2, or KZG operations fail
-    pub fn get_pk(&self, id: usize, params: &PowersOfTau<E>, n: usize) -> Result<PublicKey<E>, SteError> {
+    pub fn get_pk(
+        &self,
+        id: usize,
+        params: &PowersOfTau<E>,
+        n: usize,
+    ) -> Result<PublicKey<E>, SteError> {
         // Validate inputs
         if id >= n {
-            return Err(SteError::ValidationError(
-                format!("id ({}) must be < n ({})", id, n)
-            ));
+            return Err(SteError::ValidationError(format!(
+                "id ({}) must be < n ({})",
+                id, n
+            )));
         }
         if !n.is_power_of_two() {
-            return Err(SteError::InvalidParameter(
-                format!("n must be a power of 2, got {}", n)
-            ));
+            return Err(SteError::InvalidParameter(format!(
+                "n must be a power of 2, got {}",
+                n
+            )));
         }
 
-        let domain = Radix2EvaluationDomain::<E::ScalarField>::new(n)
-            .ok_or_else(|| SteError::DomainError(
-                format!("Failed to create domain for n = {} (must be a power of 2)", n)
-            ))?;
+        let domain = Radix2EvaluationDomain::<E::ScalarField>::new(n).ok_or_else(|| {
+            SteError::DomainError(format!(
+                "Failed to create domain for n = {} (must be a power of 2)",
+                n
+            ))
+        })?;
 
         let li = lagrange_poly(n, id);
 
         let mut sk_li_lj_z = vec![];
+        let sk_scalar = self.scalar();
         for j in 0..n {
             let num = if id == j {
                 li.clone().mul(&li).sub(&li)
@@ -247,7 +249,7 @@ impl<E: Pairing> SecretKey<E> {
             };
 
             let f = num.divide_by_vanishing_poly(domain).0;
-            let sk_times_f = &f * self.sk;
+            let sk_times_f = &f * sk_scalar;
 
             let com = KZG10::commit_g1(params, &sk_times_f)?;
             sk_li_lj_z.push(com.into());
@@ -263,11 +265,11 @@ impl<E: Pairing> SecretKey<E> {
             vec![E::ScalarField::zero()]
         };
         let li_x_poly = DensePolynomial::from_coefficients_vec(li_x_coeffs);
-        let sk_times_f = &li_x_poly * self.sk;
+        let sk_times_f = &li_x_poly * sk_scalar;
         let sk_li_x = KZG10::commit_g1(params, &sk_times_f)?;
 
         // Compute sk_li: commitment to li(x) * sk
-        let mut f = &li * self.sk;
+        let mut f = &li * sk_scalar;
         let sk_li = KZG10::commit_g1(params, &f)?;
 
         // Compute sk_li_minus0: commitment to (li(x) - li(0)) * sk
@@ -276,7 +278,7 @@ impl<E: Pairing> SecretKey<E> {
 
         Ok(PublicKey {
             id,
-            bls_pk: E::G1::generator() * self.sk,
+            bls_pk: E::G1::generator() * sk_scalar,
             sk_li: sk_li.into(),
             sk_li_minus0: sk_li_minus0.into(),
             sk_li_lj_z,
@@ -295,28 +297,35 @@ impl<E: Pairing> SecretKey<E> {
     ///
     /// # Errors
     /// Returns an error if id >= n
-    pub fn lagrange_get_pk(&self, id: usize, params: &LagrangePowers<E>, n: usize) -> Result<PublicKey<E>, SteError> {
+    pub fn lagrange_get_pk(
+        &self,
+        id: usize,
+        params: &LagrangePowers<E>,
+        n: usize,
+    ) -> Result<PublicKey<E>, SteError> {
         // Validate inputs
         if id >= n {
-            return Err(SteError::ValidationError(
-                format!("id ({}) must be < n ({})", id, n)
-            ));
+            return Err(SteError::ValidationError(format!(
+                "id ({}) must be < n ({})",
+                id, n
+            )));
         }
         let mut sk_li_lj_z = vec![];
 
-        let sk_li = params.li[id] * self.sk;
+        let sk_scalar = self.scalar();
+        let sk_li = params.li[id] * sk_scalar;
 
-        let sk_li_minus0 = params.li_minus0[id] * self.sk;
+        let sk_li_minus0 = params.li_minus0[id] * sk_scalar;
 
-        let sk_li_x = params.li_x[id] * self.sk;
+        let sk_li_x = params.li_x[id] * sk_scalar;
 
         for j in 0..n {
-            sk_li_lj_z.push(params.li_lj_z[id][j] * self.sk);
+            sk_li_lj_z.push(params.li_lj_z[id][j] * sk_scalar);
         }
 
         Ok(PublicKey {
             id,
-            bls_pk: E::G1::generator() * self.sk,
+            bls_pk: E::G1::generator() * sk_scalar,
             sk_li,
             sk_li_minus0,
             sk_li_lj_z,
@@ -331,7 +340,7 @@ impl<E: Pairing> SecretKey<E> {
     /// # Arguments
     /// * `ct` - The ciphertext to partially decrypt
     pub fn partial_decryption(&self, ct: &Ciphertext<E>) -> E::G2 {
-        ct.gamma_g2 * self.sk
+        ct.gamma_g2 * self.scalar()
     }
 
     /// Batch computes public keys for multiple secret keys in O(n) time per key.
@@ -357,9 +366,11 @@ impl<E: Pairing> SecretKey<E> {
         n: usize,
     ) -> Result<Vec<PublicKey<E>>, SteError> {
         if secret_keys.len() != n {
-            return Err(SteError::ValidationError(
-                format!("Number of secret keys ({}) must equal n ({})", secret_keys.len(), n)
-            ));
+            return Err(SteError::ValidationError(format!(
+                "Number of secret keys ({}) must equal n ({})",
+                secret_keys.len(),
+                n
+            )));
         }
 
         // Use parallel iterator to compute public keys for all parties
@@ -368,6 +379,10 @@ impl<E: Pairing> SecretKey<E> {
             .enumerate()
             .map(|(id, sk)| sk.lagrange_get_pk(id, params, n))
             .collect()
+    }
+
+    fn scalar(&self) -> E::ScalarField {
+        self.sk.expose_secret().clone()
     }
 }
 
@@ -385,9 +400,17 @@ impl<E: Pairing> AggregateKey<E> {
         if n == 0 {
             return Err(SteError::ValidationError("pk cannot be empty".to_string()));
         }
-        if n > params.powers_of_h.len() {
+        if n >= params.powers_of_h.len() {
+            return Err(SteError::ValidationError(format!(
+                "n ({}) requires at least n + 1 = {} powers of h, but params only have {}",
+                n,
+                n + 1,
+                params.powers_of_h.len()
+            )));
+        }
+        if params.powers_of_g.is_empty() {
             return Err(SteError::ValidationError(
-                format!("n ({}) exceeds KZG parameters length ({})", n, params.powers_of_h.len())
+                "KZG parameters must contain at least one G power".to_string(),
             ));
         }
 
@@ -423,6 +446,7 @@ impl<E: Pairing> AggregateKey<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SteError;
 
     type E = ark_bls12_381::Bls12_381;
     type Fr = <E as Pairing>::ScalarField;
@@ -447,10 +471,39 @@ mod tests {
 
             assert_eq!(pk[i].sk_li, lagrange_pk[i].sk_li);
             assert_eq!(pk[i].sk_li_minus0, lagrange_pk[i].sk_li_minus0);
-            assert_eq!(pk[i].sk_li_x, lagrange_pk[i].sk_li_x, "sk_li_x mismatch for party {}", i);
+            assert_eq!(
+                pk[i].sk_li_x, lagrange_pk[i].sk_li_x,
+                "sk_li_x mismatch for party {}",
+                i
+            );
             assert_eq!(pk[i].sk_li_lj_z, lagrange_pk[i].sk_li_lj_z);
         }
 
         let _ak = AggregateKey::<E>::new(pk, &params).unwrap();
+    }
+
+    #[test]
+    fn test_aggregate_key_rejects_insufficient_params() {
+        let mut rng = ark_std::test_rng();
+        let n = 4;
+        let tau = Fr::rand(&mut rng);
+        let params = KZG10::<E, UniPoly381>::setup(n, tau).unwrap();
+        let lagrange_params = LagrangePowers::<E>::new(tau, n).unwrap();
+
+        let sk: Vec<SecretKey<E>> = (0..n).map(|_| SecretKey::<E>::new(&mut rng)).collect();
+        let pk: Vec<PublicKey<E>> = sk
+            .iter()
+            .enumerate()
+            .map(|(i, sk)| sk.lagrange_get_pk(i, &lagrange_params, n).unwrap())
+            .collect();
+
+        let mut short_params = params.clone();
+        short_params.powers_of_h.truncate(n); // remove the last required power
+        let err = AggregateKey::<E>::new(pk, &short_params)
+            .expect_err("expected aggregate key creation to fail with short params");
+        assert!(
+            matches!(err, SteError::ValidationError(ref msg) if msg.contains("n + 1")),
+            "unexpected error: {err:?}"
+        );
     }
 }

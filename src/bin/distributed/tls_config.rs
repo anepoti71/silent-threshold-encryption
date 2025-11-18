@@ -1,10 +1,13 @@
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::io::BufReader;
 use std::sync::Arc;
-use tokio_rustls::rustls::{self, ClientConfig, ServerConfig};
+use tokio_rustls::rustls::{
+    self, client::danger::ServerCertVerifier, ClientConfig, RootCertStore, ServerConfig,
+};
 
 /// Generate a self-signed certificate for testing/development purposes
-pub fn generate_self_signed_cert() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), Box<dyn std::error::Error>> {
+pub fn generate_self_signed_cert(
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), Box<dyn std::error::Error>> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
     let key = PrivateKeyDer::try_from(cert.key_pair.serialize_der())?;
     let cert_der = CertificateDer::from(cert.cert.der().to_vec());
@@ -117,11 +120,36 @@ pub fn load_cert_and_key(
     let mut cert_reader = BufReader::new(cert_file);
     let mut key_reader = BufReader::new(key_file);
 
-    let certs = rustls_pemfile::certs(&mut cert_reader)
-        .collect::<Result<Vec<_>, _>>()?;
+    let certs = rustls_pemfile::certs(&mut cert_reader).collect::<Result<Vec<_>, _>>()?;
 
-    let key = rustls_pemfile::private_key(&mut key_reader)?
-        .ok_or("No private key found in file")?;
+    let key =
+        rustls_pemfile::private_key(&mut key_reader)?.ok_or("No private key found in file")?;
 
     Ok((certs, key))
+}
+
+/// Load certificate(s) from a PEM file to use as trusted roots on the client
+pub fn load_certs(
+    cert_path: &str,
+) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error>> {
+    let cert_file = std::fs::File::open(cert_path)?;
+    let mut cert_reader = BufReader::new(cert_file);
+    let certs = rustls_pemfile::certs(&mut cert_reader).collect::<Result<Vec<_>, _>>()?;
+    Ok(certs)
+}
+
+/// Create TLS client configuration backed by the provided root certificates (certificate pinning)
+pub fn create_client_config_with_roots(
+    roots: Vec<CertificateDer<'static>>,
+) -> Result<Arc<ClientConfig>, Box<dyn std::error::Error>> {
+    let mut root_store = RootCertStore::empty();
+    for cert in roots {
+        root_store.add(cert)?;
+    }
+
+    let config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    Ok(Arc::new(config))
 }

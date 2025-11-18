@@ -7,6 +7,10 @@
 
 use ark_ec::pairing::Pairing;
 use ark_ff::Field;
+use ark_serialize::{
+    CanonicalDeserialize, CanonicalSerialize, Compress, Read, SerializationError, Valid, Validate,
+    Write,
+};
 use ark_std::vec::Vec;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -48,16 +52,12 @@ impl<F: Field> SensitiveScalar<F> {
 
     /// Create a new sensitive scalar with value zero
     pub fn zero() -> Self {
-        Self {
-            value: F::zero(),
-        }
+        Self { value: F::zero() }
     }
 
     /// Create a new sensitive scalar with value one
     pub fn one() -> Self {
-        Self {
-            value: F::one(),
-        }
+        Self { value: F::one() }
     }
 }
 
@@ -77,6 +77,46 @@ impl<F: Field> ZeroizeOnDrop for SensitiveScalar<F> {}
 impl<F: Field> Drop for SensitiveScalar<F> {
     fn drop(&mut self) {
         self.zeroize();
+    }
+}
+
+impl<F> CanonicalSerialize for SensitiveScalar<F>
+where
+    F: Field + CanonicalSerialize,
+{
+    fn serialize_with_mode<W: Write>(
+        &self,
+        mut writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        self.value.serialize_with_mode(&mut writer, compress)
+    }
+
+    fn serialized_size(&self, compress: Compress) -> usize {
+        self.value.serialized_size(compress)
+    }
+}
+
+impl<F> CanonicalDeserialize for SensitiveScalar<F>
+where
+    F: Field + CanonicalDeserialize,
+{
+    fn deserialize_with_mode<R: Read>(
+        mut reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        let value = F::deserialize_with_mode(&mut reader, compress, validate)?;
+        Ok(SensitiveScalar::new(value))
+    }
+}
+
+impl<F> Valid for SensitiveScalar<F>
+where
+    F: Field + Valid,
+{
+    fn check(&self) -> Result<(), SerializationError> {
+        self.value.check()
     }
 }
 
@@ -453,10 +493,18 @@ mod tests {
         let invalid_signature = message * Fr::rand(&mut rng);
 
         // Test valid signature verification
-        assert!(verify_bls_signature_ct::<E>(&valid_signature, &pk, &message));
+        assert!(verify_bls_signature_ct::<E>(
+            &valid_signature,
+            &pk,
+            &message
+        ));
 
         // Test invalid signature verification
-        assert!(!verify_bls_signature_ct::<E>(&invalid_signature, &pk, &message));
+        assert!(!verify_bls_signature_ct::<E>(
+            &invalid_signature,
+            &pk,
+            &message
+        ));
     }
 
     #[test]

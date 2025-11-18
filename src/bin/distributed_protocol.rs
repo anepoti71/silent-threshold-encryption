@@ -72,7 +72,7 @@ mod distributed {
     use silent_threshold_encryption::{
         decryption::agg_dec,
         encryption::{encrypt, Ciphertext},
-        kzg::{KZG10, PowersOfTau},
+        kzg::{PowersOfTau, KZG10},
         security::SensitiveScalar,
         setup::{AggregateKey, LagrangePowers, PublicKey, SecretKey},
     };
@@ -102,26 +102,19 @@ mod distributed {
         /// Request party to generate and send their public key
         RequestPublicKey {
             party_id: usize,
-            tau_bytes: Vec<u8>,  // Serialized tau parameter
+            lagrange_bytes: Vec<u8>, // Serialized Lagrange powers
             n: usize,
         },
         /// Broadcast ciphertext to all parties
         Ciphertext {
-            ct_bytes: Vec<u8>,  // Serialized ciphertext
+            ct_bytes: Vec<u8>, // Serialized ciphertext
         },
         /// Request partial decryption from selected parties
-        RequestPartialDecryption {
-            party_id: usize,
-            ct_bytes: Vec<u8>,
-        },
+        RequestPartialDecryption { party_id: usize, ct_bytes: Vec<u8> },
         /// Notify party of successful completion
-        Success {
-            message: String,
-        },
+        Success { message: String },
         /// Notify party of error
-        Error {
-            message: String,
-        },
+        Error { message: String },
     }
 
     /// Messages sent from parties to coordinator
@@ -130,22 +123,17 @@ mod distributed {
         /// Party sends their public key
         PublicKey {
             party_id: usize,
-            pk_bytes: Vec<u8>,  // Serialized public key
+            pk_bytes: Vec<u8>, // Serialized public key
         },
         /// Party sends partial decryption
         PartialDecryption {
             party_id: usize,
-            pd_bytes: Vec<u8>,  // Serialized G2 element
+            pd_bytes: Vec<u8>, // Serialized G2 element
         },
         /// Party ready and waiting for commands
-        Ready {
-            party_id: usize,
-        },
+        Ready { party_id: usize },
         /// Party encountered an error
-        Error {
-            party_id: usize,
-            message: String,
-        },
+        Error { party_id: usize, message: String },
     }
 
     // ============================================================================
@@ -200,10 +188,18 @@ mod distributed {
         public_keys: HashMap<usize, PublicKey<E>>,
         partial_decryptions: HashMap<usize, G2>,
         party_connections: HashMap<usize, tokio_rustls::server::TlsStream<TcpStream>>,
+        cert_path: Option<String>,
+        key_path: Option<String>,
     }
 
     impl Coordinator {
-        pub fn new(port: u16, n: usize, t: usize) -> Result<Self, Box<dyn std::error::Error>> {
+        pub fn new(
+            port: u16,
+            n: usize,
+            t: usize,
+            cert_path: Option<String>,
+            key_path: Option<String>,
+        ) -> Result<Self, Box<dyn std::error::Error>> {
             println!("🔧 Coordinator: Initializing with n={}, t={}", n, t);
 
             let mut rng = SecureRng::new();
@@ -228,13 +224,27 @@ mod distributed {
                 public_keys: HashMap::new(),
                 partial_decryptions: HashMap::new(),
                 party_connections: HashMap::new(),
+                cert_path,
+                key_path,
             })
         }
 
         pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-            // Generate self-signed certificate for TLS
-            println!("🔐 Coordinator: Generating TLS certificate...");
-            let (certs, key) = tls_config::generate_self_signed_cert()?;
+            // Load or generate certificate for TLS
+            println!("🔐 Coordinator: Preparing TLS certificate...");
+            let (certs, key) = match (&self.cert_path, &self.key_path) {
+                (Some(cert_path), Some(key_path)) => {
+                    println!("🔐 Coordinator: Loading certificate from {}", cert_path);
+                    tls_config::load_cert_and_key(cert_path, key_path)?
+                }
+                (None, None) => {
+                    println!("⚠️ Coordinator: No certificate/key provided. Generating self-signed certificate (share its PEM with parties for pinning).");
+                    tls_config::generate_self_signed_cert()?
+                }
+                _ => {
+                    return Err("Both certificate and key paths must be provided together".into());
+                }
+            };
             let tls_config = tls_config::create_server_config(certs, key)?;
             let acceptor = TlsAcceptor::from(tls_config);
             println!("✓ Coordinator: TLS certificate ready");
@@ -242,16 +252,25 @@ mod distributed {
             let addr = format!("127.0.0.1:{}", self.port);
             let listener = TcpListener::bind(&addr).await?;
             println!("🌐 Coordinator: Listening on {} (TLS 1.3)", addr);
-            println!("⏳ Coordinator: Waiting for {} parties to connect...", self.n);
+            println!(
+                "⏳ Coordinator: Waiting for {} parties to connect...",
+                self.n
+            );
 
             // Accept connections from all n parties
             for i in 0..self.n {
                 let (tcp_stream, peer_addr) = listener.accept().await?;
-                println!("🔌 Coordinator: TCP connection from {} (party {})", peer_addr, i);
+                println!(
+                    "🔌 Coordinator: TCP connection from {} (party {})",
+                    peer_addr, i
+                );
 
                 // Perform TLS handshake
                 let tls_stream = acceptor.accept(tcp_stream).await?;
-                println!("✓ Coordinator: Party {} connected with TLS from {}", i, peer_addr);
+                println!(
+                    "✓ Coordinator: Party {} connected with TLS from {}",
+                    i, peer_addr
+                );
                 self.party_connections.insert(i, tls_stream);
             }
 
@@ -264,9 +283,8 @@ mod distributed {
 
             // Compute aggregate key
             println!("\n🔧 Coordinator: Computing aggregate key...");
-            let pk_vec: Vec<PublicKey<E>> = (0..self.n)
-                .map(|i| self.public_keys[&i].clone())
-                .collect();
+            let pk_vec: Vec<PublicKey<E>> =
+                (0..self.n).map(|i| self.public_keys[&i].clone()).collect();
             let agg_key = AggregateKey::<E>::new(pk_vec, &self.kzg_params)?;
             println!("✓ Coordinator: Aggregate key computed");
 
@@ -276,7 +294,10 @@ mod distributed {
 
             // Encrypt a message
             let mut rng = SecureRng::new();
-            println!("🔐 Coordinator: Encrypting message with threshold t={}...", self.t);
+            println!(
+                "🔐 Coordinator: Encrypting message with threshold t={}...",
+                self.t
+            );
             let ct = encrypt::<E, _>(&agg_key, self.t, &self.kzg_params, &mut rng)?;
             println!("✓ Coordinator: Ciphertext generated");
             println!("  Encrypted key: {:?}", ct.enc_key);
@@ -291,11 +312,15 @@ mod distributed {
                 selected_parties.push(i);
             }
 
-            println!("🎯 Coordinator: Selected {} parties for decryption: {:?}",
-                     selected_parties.len(), selected_parties);
+            println!(
+                "🎯 Coordinator: Selected {} parties for decryption: {:?}",
+                selected_parties.len(),
+                selected_parties
+            );
 
             // Request partial decryptions
-            self.request_partial_decryptions(&ct, &selected_parties).await?;
+            self.request_partial_decryptions(&ct, &selected_parties)
+                .await?;
 
             // Aggregate and decrypt
             println!("\n🔓 Coordinator: Aggregating partial decryptions...");
@@ -328,15 +353,16 @@ mod distributed {
         }
 
         async fn request_public_keys(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-            // Serialize tau
-            let mut tau_bytes = Vec::new();
-            self.tau.expose_secret().serialize_compressed(&mut tau_bytes)?;
+            // Serialize preprocessed Lagrange parameters once and send to all parties
+            let mut lagrange_bytes = Vec::new();
+            self.lagrange_params
+                .serialize_compressed(&mut lagrange_bytes)?;
 
             // Send requests to all parties
             for party_id in 0..self.n {
                 let msg = CoordinatorMessage::RequestPublicKey {
                     party_id,
-                    tau_bytes: tau_bytes.clone(),
+                    lagrange_bytes: lagrange_bytes.clone(),
                     n: self.n,
                 };
                 self.send_to_party(party_id, &msg).await?;
@@ -359,7 +385,11 @@ mod distributed {
                         println!("  Party {} ready", party_id);
                     }
                     _ => {
-                        return Err(format!("Unexpected message from party {}: {:?}", party_id, msg).into());
+                        return Err(format!(
+                            "Unexpected message from party {}: {:?}",
+                            party_id, msg
+                        )
+                        .into());
                     }
                 }
             }
@@ -392,9 +422,14 @@ mod distributed {
                 if let PartyMessage::PartialDecryption { party_id, pd_bytes } = msg {
                     let pd = G2::deserialize_compressed(&pd_bytes[..])?;
                     self.partial_decryptions.insert(party_id, pd);
-                    println!("✓ Coordinator: Received partial decryption from party {}", party_id);
+                    println!(
+                        "✓ Coordinator: Received partial decryption from party {}",
+                        party_id
+                    );
                 } else {
-                    return Err(format!("Unexpected message from party {}: {:?}", party_id, msg).into());
+                    return Err(
+                        format!("Unexpected message from party {}: {:?}", party_id, msg).into(),
+                    );
                 }
             }
 
@@ -406,7 +441,9 @@ mod distributed {
             party_id: usize,
             msg: &CoordinatorMessage,
         ) -> Result<(), Box<dyn std::error::Error>> {
-            let stream = self.party_connections.get_mut(&party_id)
+            let stream = self
+                .party_connections
+                .get_mut(&party_id)
                 .ok_or(format!("Party {} not connected", party_id))?;
 
             let data = serialize(msg)?;
@@ -419,7 +456,9 @@ mod distributed {
             Ok(())
         }
 
-        async fn receive_from_any_party(&mut self) -> Result<(usize, PartyMessage), Box<dyn std::error::Error>> {
+        async fn receive_from_any_party(
+            &mut self,
+        ) -> Result<(usize, PartyMessage), Box<dyn std::error::Error>> {
             // Simple round-robin polling (in production, use select! or similar)
             loop {
                 for party_id in 0..self.n {
@@ -427,8 +466,10 @@ mod distributed {
                         // Try to read with a small timeout
                         match tokio::time::timeout(
                             std::time::Duration::from_millis(10),
-                            stream.read_u32()
-                        ).await {
+                            stream.read_u32(),
+                        )
+                        .await
+                        {
                             Ok(Ok(len)) => {
                                 let mut data = vec![0u8; len as usize];
                                 stream.read_exact(&mut data).await?;
@@ -463,24 +504,52 @@ mod distributed {
     pub struct Party {
         id: usize,
         coordinator_addr: String,
+        server_cert_path: Option<String>,
+        allow_insecure: bool,
         secret_key: Option<SecretKey<E>>,
     }
 
     impl Party {
-        pub fn new(id: usize, coordinator_addr: String) -> Self {
+        pub fn new(
+            id: usize,
+            coordinator_addr: String,
+            server_cert_path: Option<String>,
+            allow_insecure: bool,
+        ) -> Self {
             println!("🎭 Party {}: Initializing", id);
             Self {
                 id,
                 coordinator_addr,
+                server_cert_path,
+                allow_insecure,
                 secret_key: None,
             }
         }
 
         pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-            println!("🌐 Party {}: Connecting to coordinator at {}", self.id, self.coordinator_addr);
+            println!(
+                "🌐 Party {}: Connecting to coordinator at {}",
+                self.id, self.coordinator_addr
+            );
 
-            // Create TLS client configuration
-            let tls_config = tls_config::create_client_config_dev()?;
+            // Create TLS client configuration with optional certificate pinning
+            let tls_config = if let Some(cert_path) = &self.server_cert_path {
+                println!(
+                    "🔐 Party {}: Using pinned server certificate {}",
+                    self.id, cert_path
+                );
+                let certs = tls_config::load_certs(cert_path)?;
+                tls_config::create_client_config_with_roots(certs)?
+            } else {
+                if !self.allow_insecure {
+                    return Err("Server certificate path missing. Provide --server-cert or use --allow-insecure for development".into());
+                }
+                println!(
+                    "⚠️ Party {}: WARNING - running without server certificate verification",
+                    self.id
+                );
+                tls_config::create_client_config_dev()?
+            };
             let connector = TlsConnector::from(tls_config);
 
             // Connect via TCP
@@ -502,19 +571,28 @@ mod distributed {
                 let msg = self.receive_message(&mut stream).await?;
 
                 match msg {
-                    CoordinatorMessage::RequestPublicKey { party_id, tau_bytes, n } => {
+                    CoordinatorMessage::RequestPublicKey {
+                        party_id,
+                        lagrange_bytes,
+                        n,
+                    } => {
                         if party_id != self.id {
                             continue;
                         }
                         println!("\n📨 Party {}: Received request for public key", self.id);
-                        self.handle_public_key_request(&mut stream, &tau_bytes, n).await?;
+                        self.handle_public_key_request(&mut stream, &lagrange_bytes, n)
+                            .await?;
                     }
                     CoordinatorMessage::RequestPartialDecryption { party_id, ct_bytes } => {
                         if party_id != self.id {
                             continue;
                         }
-                        println!("\n📨 Party {}: Received request for partial decryption", self.id);
-                        self.handle_partial_decryption_request(&mut stream, &ct_bytes).await?;
+                        println!(
+                            "\n📨 Party {}: Received request for partial decryption",
+                            self.id
+                        );
+                        self.handle_partial_decryption_request(&mut stream, &ct_bytes)
+                            .await?;
                     }
                     CoordinatorMessage::Success { message } => {
                         println!("\n✅ Party {}: {}", self.id, message);
@@ -534,11 +612,11 @@ mod distributed {
         async fn handle_public_key_request(
             &mut self,
             stream: &mut tokio_rustls::client::TlsStream<TcpStream>,
-            tau_bytes: &[u8],
+            lagrange_bytes: &[u8],
             n: usize,
         ) -> Result<(), Box<dyn std::error::Error>> {
-            // Deserialize tau
-            let tau = Fr::deserialize_compressed(tau_bytes)?;
+            // Deserialize the coordinator-provided Lagrange powers
+            let lagrange_params = LagrangePowers::<E>::deserialize_compressed(lagrange_bytes)?;
 
             // Generate secret key
             let mut rng = SecureRng::new();
@@ -547,13 +625,15 @@ mod distributed {
             // Party 0 is the dummy party
             if self.id == 0 {
                 sk.nullify();
-                println!("🔑 Party {}: Generated nullified secret key (dummy party)", self.id);
+                println!(
+                    "🔑 Party {}: Generated nullified secret key (dummy party)",
+                    self.id
+                );
             } else {
                 println!("🔑 Party {}: Generated secret key", self.id);
             }
 
-            // Compute public key using Lagrange method
-            let lagrange_params = LagrangePowers::<E>::new(tau, n)?;
+            // Compute public key using provided Lagrange parameters
             let pk = sk.lagrange_get_pk(self.id, &lagrange_params, n)?;
 
             // Store secret key for later
@@ -583,7 +663,9 @@ mod distributed {
             let ct = Ciphertext::<E>::deserialize_compressed(ct_bytes)?;
 
             // Compute partial decryption
-            let sk = self.secret_key.as_ref()
+            let sk = self
+                .secret_key
+                .as_ref()
                 .ok_or("Secret key not initialized")?;
             let pd = sk.partial_decryption(&ct);
 
@@ -597,7 +679,10 @@ mod distributed {
             };
 
             self.send_message(stream, &response).await?;
-            println!("✓ Party {}: Sent partial decryption to coordinator", self.id);
+            println!(
+                "✓ Party {}: Sent partial decryption to coordinator",
+                self.id
+            );
 
             Ok(())
         }
@@ -654,6 +739,12 @@ mod distributed {
             /// Threshold value
             #[arg(short, long, default_value = "2")]
             threshold: usize,
+            /// Path to PEM-encoded certificate
+            #[arg(long)]
+            cert: Option<String>,
+            /// Path to PEM-encoded private key
+            #[arg(long)]
+            key: Option<String>,
         },
         /// Run as party client
         Party {
@@ -663,6 +754,12 @@ mod distributed {
             /// Coordinator address (e.g., localhost:8080)
             #[arg(short, long)]
             coordinator: String,
+            /// Path to trusted coordinator certificate (PEM). Required unless --allow-insecure is used.
+            #[arg(long)]
+            server_cert: Option<String>,
+            /// Allow running without certificate verification (development only)
+            #[arg(long, default_value_t = false)]
+            allow_insecure: bool,
         },
     }
 
@@ -670,12 +767,23 @@ mod distributed {
         let cli = Cli::parse();
 
         match cli.command {
-            Commands::Coordinator { port, parties, threshold } => {
-                let mut coordinator = Coordinator::new(port, parties, threshold)?;
+            Commands::Coordinator {
+                port,
+                parties,
+                threshold,
+                cert,
+                key,
+            } => {
+                let mut coordinator = Coordinator::new(port, parties, threshold, cert, key)?;
                 coordinator.run().await?;
             }
-            Commands::Party { id, coordinator } => {
-                let mut party = Party::new(id, coordinator);
+            Commands::Party {
+                id,
+                coordinator,
+                server_cert,
+                allow_insecure,
+            } => {
+                let mut party = Party::new(id, coordinator, server_cert, allow_insecure);
                 party.run().await?;
             }
         }

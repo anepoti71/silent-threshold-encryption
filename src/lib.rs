@@ -21,6 +21,7 @@
 //! ```rust,no_run
 //! use ark_bls12_381::Bls12_381;
 //! use ark_poly::univariate::DensePolynomial;
+//! use ark_std::{UniformRand, Zero};
 //! use silent_threshold_encryption::{
 //!     setup::{SecretKey, LagrangePowers, AggregateKey},
 //!     encryption::encrypt,

@@ -96,4 +96,3 @@ impl From<Box<dyn std::error::Error>> for SteError {
         SteError::CryptoError(err.to_string())
     }
 }
-

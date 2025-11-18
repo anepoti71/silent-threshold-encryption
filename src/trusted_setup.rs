@@ -99,8 +99,8 @@ impl<E: Pairing> Ceremony<E> {
         // exist in memory from intermediate computations (powers_of_tau, cur, etc.).
         // For production use, consider using a wrapper type that implements Zeroize.
         let _ = tau; // Explicitly drop tau
-        // Note: powers_of_tau and cur also contain tau values and should be zeroized
-        // in production, but they're dropped here when going out of scope
+                     // Note: powers_of_tau and cur also contain tau values and should be zeroized
+                     // in production, but they're dropped here when going out of scope
 
         Ok(Ceremony {
             max_degree,
@@ -117,7 +117,9 @@ impl<E: Pairing> Ceremony<E> {
     /// - After this function returns, caller MUST zeroize all RNG state and secrets
     /// - The secret τ must never be stored or transmitted
     pub fn contribute<R: RngCore>(&mut self, rng: &mut R) -> Result<(), KzgError> {
-        let previous = self.contributions.last()
+        let previous = self
+            .contributions
+            .last()
             .ok_or_else(|| KzgError::DegreeIsZero)?;
 
         // Generate random tau for this participant
@@ -173,8 +175,8 @@ impl<E: Pairing> Ceremony<E> {
         // exist in memory from intermediate computations (powers_of_tau, cur, etc.).
         // For production use, consider using a wrapper type that implements Zeroize.
         let _ = tau; // Explicitly drop tau
-        // Note: powers_of_tau and cur also contain tau values and should be zeroized
-        // in production, but they're dropped here when going out of scope
+                     // Note: powers_of_tau and cur also contain tau values and should be zeroized
+                     // in production, but they're dropped here when going out of scope
 
         Ok(())
     }
@@ -213,15 +215,46 @@ impl<E: Pairing> Ceremony<E> {
 
         // Basic sanity check: verify that curr[0] == prev[0] (both should be G/H)
         // Since τ^0 = 1, multiplying by 1 shouldn't change the base point
-        if curr.powers_of_g[0] != prev.powers_of_g[0]
-            || curr.powers_of_h[0] != prev.powers_of_h[0]
+        if curr.powers_of_g[0] != prev.powers_of_g[0] || curr.powers_of_h[0] != prev.powers_of_h[0]
         {
             return false;
         }
 
-        // Additional structural validations could be added here
-        // For now, we perform basic checks and trust that participants are honest
-        // or that external verification will be performed
+        // Verify that both sequences were exponentiated by the same scalar using pairing checks
+        if curr.powers_of_g.len() < 2 || curr.powers_of_h.len() < 2 {
+            return false;
+        }
+
+        let prev_g0 = prev.powers_of_g[0];
+        let prev_h0 = prev.powers_of_h[0];
+        let prev_g1 = prev.powers_of_g[1];
+        let prev_h1 = prev.powers_of_h[1];
+        let proof_g = curr.proof_g;
+        let proof_h = curr.proof_h;
+
+        // Check that the same scalar was applied to both G and H sequences:
+        // e(proof_g, prev_h1) == e(prev_g1, proof_h)
+        if E::pairing(proof_g, prev_h1) != E::pairing(prev_g1, proof_h) {
+            return false;
+        }
+
+        // Check that each successive G power was multiplied by the same scalar encoded in proof_h
+        for i in 0..curr.powers_of_g.len() - 1 {
+            let lhs = E::pairing(curr.powers_of_g[i].clone(), proof_h);
+            let rhs = E::pairing(curr.powers_of_g[i + 1].clone(), prev_h0);
+            if lhs != rhs {
+                return false;
+            }
+        }
+
+        // Check that each successive H power matches the scalar encoded in proof_g
+        for i in 0..curr.powers_of_h.len() - 1 {
+            let lhs = E::pairing(proof_g, curr.powers_of_h[i].clone());
+            let rhs = E::pairing(prev_g0, curr.powers_of_h[i + 1].clone());
+            if lhs != rhs {
+                return false;
+            }
+        }
 
         true
     }
@@ -234,7 +267,10 @@ impl<E: Pairing> Ceremony<E> {
     /// # Errors
     /// Returns `KzgError::DegreeIsZero` if no contributions have been made.
     pub fn finalize(self) -> Result<PowersOfTau<E>, KzgError> {
-        let final_contribution = self.contributions.into_iter().last()
+        let final_contribution = self
+            .contributions
+            .into_iter()
+            .last()
             .ok_or_else(|| KzgError::DegreeIsZero)?;
         Ok(PowersOfTau {
             powers_of_g: final_contribution.powers_of_g,
@@ -306,5 +342,22 @@ mod tests {
         // τ^0 = 1, so base points should remain unchanged
         assert_eq!(ceremony.contributions[1].powers_of_g[0], initial_g0);
         assert_eq!(ceremony.contributions[1].powers_of_h[0], initial_h0);
+    }
+
+    #[test]
+    fn test_ceremony_detects_tampering() {
+        use ark_ec::PrimeGroup;
+
+        let mut rng = test_rng();
+        let max_degree = 8;
+
+        let mut ceremony = Ceremony::<E>::new(max_degree, &mut rng).unwrap();
+        ceremony.contribute(&mut test_rng()).unwrap();
+
+        assert!(ceremony.verify_contribution(1));
+
+        // Tamper with one of the G powers (set it to generator) which should break verification
+        ceremony.contributions[1].powers_of_g[2] = <E as Pairing>::G1::generator().into();
+        assert!(!ceremony.verify_contribution(1));
     }
 }

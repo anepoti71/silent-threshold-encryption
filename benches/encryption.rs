@@ -29,7 +29,9 @@ fn bench_encrypt(c: &mut Criterion) {
 
     let ak = AggregateKey::<E>::new(pk, &params).unwrap();
 
-    c.bench_function("encrypt", |b| b.iter(|| encrypt::<E, _>(&ak, t, &params, &mut rng)));
+    c.bench_function("encrypt", |b| {
+        b.iter(|| encrypt::<E, _>(&ak, t, &params, &mut rng))
+    });
 }
 
 criterion_group!(benches, bench_encrypt);

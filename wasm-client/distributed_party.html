@@ -335,9 +335,9 @@
                 switch (messageType) {
                     case 'RequestPublicKey':
                         addLog('🔑 Handling public key request...');
-                        const tauBytes = new Uint8Array(data.tau_bytes);
+                        const lagrangeBytes = new Uint8Array(data.lagrange_bytes);
                         const n = data.n;
-                        party.handlePublicKeyRequest(tauBytes, n);
+                        party.handlePublicKeyRequest(lagrangeBytes, n);
                         updateConnectionStatus('Generated and sent public key', 'success');
                         break;
 

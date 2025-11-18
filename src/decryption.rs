@@ -63,34 +63,39 @@ pub fn agg_dec<E: Pairing>(
 ) -> Result<PairingOutput<E>, SteError> {
     let n = agg_key.pk.len();
     let t = ct.t;
-    
+
     // Validate inputs
     if partial_decryptions.len() != n {
-        return Err(SteError::ValidationError(
-            format!("partial_decryptions length ({}) must equal n ({})", partial_decryptions.len(), n)
-        ));
+        return Err(SteError::ValidationError(format!(
+            "partial_decryptions length ({}) must equal n ({})",
+            partial_decryptions.len(),
+            n
+        )));
     }
     if selector.len() != n {
-        return Err(SteError::ValidationError(
-            format!("selector length ({}) must equal n ({})", selector.len(), n)
-        ));
+        return Err(SteError::ValidationError(format!(
+            "selector length ({}) must equal n ({})",
+            selector.len(),
+            n
+        )));
     }
     if !n.is_power_of_two() {
-        return Err(SteError::InvalidParameter(
-            format!("n must be a power of 2, got {}", n)
-        ));
+        return Err(SteError::InvalidParameter(format!(
+            "n must be a power of 2, got {}",
+            n
+        )));
     }
-    
+
     // Validate selector: count selected parties
     let num_selected = selector.iter().filter(|&&selected| selected).count();
-    
+
     // Party 0 (dummy party) must always be selected
     if !selector.first().copied().unwrap_or(false) {
         return Err(SteError::ValidationError(
-            "Party 0 (dummy party) must always be selected".to_string()
+            "Party 0 (dummy party) must always be selected".to_string(),
         ));
     }
-    
+
     // Must have at least t+1 parties selected (including dummy party) for threshold t
     if num_selected < t + 1 {
         return Err(SteError::InvalidThreshold(
@@ -100,21 +105,21 @@ pub fn agg_dec<E: Pairing>(
             )
         ));
     }
-    
+
     // Cannot have more than n parties selected
     if num_selected > n {
-        return Err(SteError::ValidationError(
-            format!(
-                "Too many parties selected: {} selected, but only {} parties exist",
-                num_selected, n
-            )
-        ));
+        return Err(SteError::ValidationError(format!(
+            "Too many parties selected: {} selected, but only {} parties exist",
+            num_selected, n
+        )));
     }
-    
-    let domain = Radix2EvaluationDomain::<E::ScalarField>::new(n)
-        .ok_or_else(|| SteError::DomainError(
-            format!("Failed to create domain for n = {} (must be a power of 2)", n)
-        ))?;
+
+    let domain = Radix2EvaluationDomain::<E::ScalarField>::new(n).ok_or_else(|| {
+        SteError::DomainError(format!(
+            "Failed to create domain for n = {} (must be a power of 2)",
+            n
+        ))
+    })?;
     let domain_elements: Vec<E::ScalarField> = domain.elements().collect();
 
     // points is where B is set to zero
@@ -134,19 +139,20 @@ pub fn agg_dec<E: Pairing>(
 
     // Validate polynomial properties
     if b.degree() != points.len() - 1 {
-        return Err(SteError::ValidationError(
-            format!("b.degree() ({}) != points.len() - 1 ({})", b.degree(), points.len() - 1)
-        ));
+        return Err(SteError::ValidationError(format!(
+            "b.degree() ({}) != points.len() - 1 ({})",
+            b.degree(),
+            points.len() - 1
+        )));
     }
     if b.evaluate(&domain_elements[0]) != E::ScalarField::one() {
         return Err(SteError::ValidationError(
-            "b(omega^0) != 1, polynomial construction failed".to_string()
+            "b(omega^0) != 1, polynomial construction failed".to_string(),
         ));
     }
 
     // commit to b in g2
-    let b_g2: E::G2 = KZG10::<E, DensePolynomial<E::ScalarField>>::commit_g2(params, &b)?
-        .into();
+    let b_g2: E::G2 = KZG10::<E, DensePolynomial<E::ScalarField>>::commit_g2(params, &b)?.into();
 
     // q0 = (b-1)/(x-domain_elements[0])
     let mut bminus1 = b.clone();
@@ -154,7 +160,7 @@ pub fn agg_dec<E: Pairing>(
 
     if bminus1.evaluate(&domain_elements[0]) != E::ScalarField::zero() {
         return Err(SteError::ValidationError(
-            "bminus1(omega^0) != 0, polynomial construction failed".to_string()
+            "bminus1(omega^0) != 0, polynomial construction failed".to_string(),
         ));
     }
 
@@ -162,23 +168,24 @@ pub fn agg_dec<E: Pairing>(
         DensePolynomial::from_coefficients_vec(vec![-domain_elements[0], E::ScalarField::one()]);
     let q0 = bminus1.div(&xminus1);
 
-    let q0_g1: E::G1 = KZG10::<E, DensePolynomial<E::ScalarField>>::commit_g1(params, &q0)?
-        .into();
+    let q0_g1: E::G1 = KZG10::<E, DensePolynomial<E::ScalarField>>::commit_g1(params, &q0)?.into();
 
     // bhat = x^{t+1} * b
     // insert t+1 0s at the beginning of bhat.coeffs
     let mut bhat_coeffs = vec![E::ScalarField::zero(); ct.t + 1];
     bhat_coeffs.append(&mut b.coeffs.clone());
     let bhat = DensePolynomial::from_coefficients_vec(bhat_coeffs);
-    
+
     if bhat.degree() != n {
-        return Err(SteError::ValidationError(
-            format!("bhat.degree() ({}) != n ({})", bhat.degree(), n)
-        ));
+        return Err(SteError::ValidationError(format!(
+            "bhat.degree() ({}) != n ({})",
+            bhat.degree(),
+            n
+        )));
     }
 
-    let bhat_g1: E::G1 = KZG10::<E, DensePolynomial<E::ScalarField>>::commit_g1(params, &bhat)?
-        .into();
+    let bhat_g1: E::G1 =
+        KZG10::<E, DensePolynomial<E::ScalarField>>::commit_g1(params, &bhat)?.into();
 
     // Convert n to field element using u64 for better precision with large values
     let n_inv = E::ScalarField::one() / E::ScalarField::from(n as u64);
@@ -202,7 +209,11 @@ pub fn agg_dec<E: Pairing>(
         bases_g2.push(partial_decryptions[i].into());
         scalars_g2.push(b_evals[i]);
     }
-    let mut sigma = compute_msm_g2::<E>(bases_g2.as_slice(), scalars_g2.as_slice(), "sigma computation")?;
+    let mut sigma = compute_msm_g2::<E>(
+        bases_g2.as_slice(),
+        scalars_g2.as_slice(),
+        "sigma computation",
+    )?;
     sigma *= n_inv;
 
     // compute Qx, Qhatx and Qz
@@ -252,7 +263,8 @@ pub fn agg_dec<E: Pairing>(
 
     if enc_key != ct.enc_key {
         return Err(SteError::ValidationError(
-            "Decrypted key does not match encrypted key. Decryption verification failed.".to_string()
+            "Decrypted key does not match encrypted key. Decryption verification failed."
+                .to_string(),
         ));
     }
 

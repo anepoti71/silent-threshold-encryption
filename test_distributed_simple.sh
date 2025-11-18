@@ -35,10 +35,61 @@ sleep 1
 mkdir -p test_logs
 rm -f test_logs/*.log
 
+# Generate test certificates (CA + server)
+CERT_PATH="test_logs/test_server_cert.pem"
+KEY_PATH="test_logs/test_server_key.pem"
+CA_CERT="test_logs/test_ca_cert.pem"
+CA_KEY="test_logs/test_ca_key.pem"
+CSR_PATH="test_logs/test_server.csr"
+OPENSSL_CFG="test_logs/test_server.cnf"
+
+echo -e "${YELLOW}Generating test CA and server certificates...${NC}"
+rm -f "$CERT_PATH" "$KEY_PATH" "$CA_CERT" "$CA_KEY" "$CSR_PATH" "$OPENSSL_CFG" test_logs/test_ca_cert.srl
+
+# Create CA certificate
+openssl req -x509 -nodes -newkey rsa:2048 \
+    -subj "/CN=ste-test-ca" \
+    -addext "basicConstraints = critical,CA:true,pathlen:0" \
+    -addext "keyUsage = critical,keyCertSign,cRLSign" \
+    -keyout "$CA_KEY" \
+    -out "$CA_CERT" \
+    -days 1 >/dev/null 2>&1
+
+# Create server key/csr config with SAN
+cat > "$OPENSSL_CFG" <<EOF
+[ req ]
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+
+[ req_distinguished_name ]
+
+[ v3_req ]
+basicConstraints = CA:false
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[ alt_names ]
+DNS.1 = localhost
+IP.1 = 127.0.0.1
+EOF
+
+openssl req -new -nodes -newkey rsa:2048 \
+    -subj "/CN=localhost" \
+    -keyout "$KEY_PATH" \
+    -out "$CSR_PATH" \
+    -config "$OPENSSL_CFG" >/dev/null 2>&1
+
+openssl x509 -req -in "$CSR_PATH" \
+    -CA "$CA_CERT" -CAkey "$CA_KEY" -CAcreateserial \
+    -out "$CERT_PATH" -days 1 \
+    -extensions v3_req -extfile "$OPENSSL_CFG" >/dev/null 2>&1
+
 # Start coordinator in background
 echo -e "${YELLOW}Starting coordinator...${NC}"
 ./target/release/distributed_protocol coordinator \
     --port 9999 --parties 4 --threshold 2 \
+    --cert "$CERT_PATH" --key "$KEY_PATH" \
     > test_logs/coordinator.log 2>&1 &
 COORD_PID=$!
 
@@ -58,6 +109,7 @@ for i in {0..3}; do
     echo -e "${YELLOW}Starting party $i...${NC}"
     ./target/release/distributed_protocol party \
         --id $i --coordinator localhost:9999 \
+        --server-cert "$CA_CERT" \
         > test_logs/party_$i.log 2>&1 &
     PARTY_PIDS[$i]=$!
     sleep 0.5

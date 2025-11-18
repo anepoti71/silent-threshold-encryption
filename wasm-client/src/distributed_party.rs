@@ -11,7 +11,6 @@ use silent_threshold_encryption::{
 };
 use crate::WasmRng;
 
-type Fr = <E as Pairing>::ScalarField;
 type G2 = <E as Pairing>::G2;
 
 /// Messages sent from coordinator to parties (matches the Rust protocol)
@@ -19,7 +18,7 @@ type G2 = <E as Pairing>::G2;
 pub enum CoordinatorMessage {
     RequestPublicKey {
         party_id: usize,
-        tau_bytes: Vec<u8>,
+        lagrange_bytes: Vec<u8>,
         n: usize,
     },
     Ciphertext {
@@ -216,7 +215,7 @@ impl DistributedParty {
     #[wasm_bindgen(js_name = handlePublicKeyRequest)]
     pub fn handle_public_key_request(
         &mut self,
-        tau_bytes_js: &[u8],
+        lagrange_bytes_js: &[u8],
         n: usize,
     ) -> Result<(), JsValue> {
         self.log_status("Generating secret key...");
@@ -233,14 +232,10 @@ impl DistributedParty {
             self.log_status("Generated secret key");
         }
 
-        // Deserialize tau
-        let tau = Fr::deserialize_compressed(tau_bytes_js)
-            .map_err(|e| JsValue::from_str(&format!("Failed to deserialize tau: {:?}", e)))?;
-
-        // Compute public key using Lagrange method
+        // Deserialize coordinator-provided Lagrange powers
         self.log_status("Computing public key...");
-        let lagrange_params = LagrangePowers::<E>::new(tau, n)
-            .map_err(|e| JsValue::from_str(&format!("Failed to create Lagrange powers: {:?}", e)))?;
+        let lagrange_params = LagrangePowers::<E>::deserialize_compressed(lagrange_bytes_js)
+            .map_err(|e| JsValue::from_str(&format!("Failed to deserialize Lagrange powers: {:?}", e)))?;
 
         let pk = sk.lagrange_get_pk(self.id, &lagrange_params, n)
             .map_err(|e| JsValue::from_str(&format!("Failed to generate public key: {:?}", e)))?;
