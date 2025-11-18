@@ -65,7 +65,7 @@ impl<E: Pairing> LagrangePowers<E> {
 
         let z_eval = tau.pow([n as u64]) - E::ScalarField::one();
         let z_eval_inv = z_eval.inverse()
-            .ok_or_else(|| SteError::InvalidParameter("z_eval inverse computation failed".to_string()))?;
+            .ok_or_else(|| SteError::FieldInverseError("z_eval inverse computation failed".to_string()))?;
 
         let mut li = vec![E::G1::zero(); n];
         for i in 0..n {
@@ -175,7 +175,14 @@ impl<E: Pairing> Zeroize for SecretKey<E> {
         // Note: arkworks ScalarField doesn't implement Zeroize directly,
         // so we manually zeroize by setting to zero
         // This overwrites the secret key value in memory
-        let _ = std::mem::replace(&mut self.sk, E::ScalarField::zero());
+        self.sk = E::ScalarField::zero();
+
+        // Additional defense: use volatile write to prevent compiler optimization
+        // This ensures the zeroization is not optimized away
+        use core::ptr::write_volatile;
+        unsafe {
+            write_volatile(&mut self.sk as *mut E::ScalarField, E::ScalarField::zero());
+        }
     }
 }
 

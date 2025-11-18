@@ -67,6 +67,7 @@ pub mod decryption;
 pub mod encryption;
 pub mod error;
 pub mod kzg;
+pub mod security;
 pub mod setup;
 pub mod trusted_setup;
 pub mod utils;

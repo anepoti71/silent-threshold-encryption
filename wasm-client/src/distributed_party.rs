@@ -1,14 +1,12 @@
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::JsFuture;
 use web_sys::{MessageEvent, WebSocket, ErrorEvent, CloseEvent};
 use ark_bls12_381::Bls12_381 as E;
 use ark_ec::pairing::Pairing;
 use ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
-use ark_std::rand::RngCore;
 use serde::{Serialize, Deserialize};
 use silent_threshold_encryption::{
-    setup::{SecretKey, PublicKey, LagrangePowers},
+    setup::{SecretKey, LagrangePowers},
     encryption::Ciphertext,
 };
 use crate::WasmRng;
@@ -125,7 +123,7 @@ impl DistributedParty {
         onopen_callback.forget();
 
         // Set up onmessage handler
-        let party_id = self.id;
+        let _party_id = self.id;
         let on_message = self.on_message_callback.clone();
         let on_status2 = self.on_status_callback.clone();
 
@@ -352,7 +350,6 @@ pub fn encrypt_message(
         encryption::encrypt,
         kzg::PowersOfTau,
     };
-    use ark_poly::univariate::DensePolynomial;
 
     web_sys::console::log_1(&format!("Encrypting message: '{}'", message).into());
 
@@ -401,7 +398,7 @@ pub fn decrypt_message(
     let kzg_params = PowersOfTau::<E>::deserialize_compressed(kzg_params_bytes)
         .map_err(|e| JsValue::from_str(&format!("Failed to deserialize KZG params: {:?}", e)))?;
 
-    let n = selector.length() as usize;
+    let _n = selector.length() as usize;
     let mut partial_decs = Vec::new();
     for i in 0..partial_decryptions_bytes.length() {
         let pd_js = partial_decryptions_bytes.get(i);

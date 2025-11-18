@@ -508,7 +508,8 @@ impl TrustedSetupCeremony {
         let ceremony = Ceremony::<E>::deserialize_compressed(&*self.ceremony)
             .map_err(|e| JsValue::from_str(&format!("Failed to deserialize ceremony: {:?}", e)))?;
 
-        let params = ceremony.finalize();
+        let params = ceremony.finalize()
+            .map_err(|e| JsValue::from_str(&format!("Failed to finalize ceremony: {:?}", e)))?;
 
         let mut params_bytes = Vec::new();
         params.serialize_compressed(&mut params_bytes)

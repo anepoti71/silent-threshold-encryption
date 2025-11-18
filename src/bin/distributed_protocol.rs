@@ -73,6 +73,7 @@ mod distributed {
         decryption::agg_dec,
         encryption::{encrypt, Ciphertext},
         kzg::{KZG10, PowersOfTau},
+        security::SensitiveScalar,
         setup::{AggregateKey, LagrangePowers, PublicKey, SecretKey},
     };
     use std::collections::HashMap;
@@ -87,6 +88,9 @@ mod distributed {
     type G2 = <E as Pairing>::G2;
     type Fr = <E as Pairing>::ScalarField;
     type UniPoly381 = DensePolynomial<<E as Pairing>::ScalarField>;
+
+    // Type alias for distributed protocol errors
+    type DistributedResult<T> = Result<T, Box<dyn std::error::Error>>;
 
     // ============================================================================
     // Protocol Messages
@@ -190,7 +194,7 @@ mod distributed {
         n: usize,
         t: usize,
         port: u16,
-        tau: Fr,
+        tau: SensitiveScalar<Fr>,
         kzg_params: PowersOfTau<E>,
         lagrange_params: LagrangePowers<E>,
         public_keys: HashMap<usize, PublicKey<E>>,
@@ -203,13 +207,14 @@ mod distributed {
             println!("🔧 Coordinator: Initializing with n={}, t={}", n, t);
 
             let mut rng = SecureRng::new();
-            let tau = Fr::rand(&mut rng);
+            let tau_raw = Fr::rand(&mut rng);
+            let tau = SensitiveScalar::new(tau_raw);
 
             println!("🔧 Coordinator: Setting up KZG parameters...");
-            let kzg_params = KZG10::<E, UniPoly381>::setup(n, tau)?;
+            let kzg_params = KZG10::<E, UniPoly381>::setup(n, *tau.expose_secret())?;
 
             println!("🔧 Coordinator: Preprocessing Lagrange powers...");
-            let lagrange_params = LagrangePowers::<E>::new(tau, n)?;
+            let lagrange_params = LagrangePowers::<E>::new(*tau.expose_secret(), n)?;
 
             println!("✓ Coordinator: Setup complete");
 
@@ -325,7 +330,7 @@ mod distributed {
         async fn request_public_keys(&mut self) -> Result<(), Box<dyn std::error::Error>> {
             // Serialize tau
             let mut tau_bytes = Vec::new();
-            self.tau.serialize_compressed(&mut tau_bytes)?;
+            self.tau.expose_secret().serialize_compressed(&mut tau_bytes)?;
 
             // Send requests to all parties
             for party_id in 0..self.n {

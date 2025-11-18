@@ -117,7 +117,8 @@ impl<E: Pairing> Ceremony<E> {
     /// - After this function returns, caller MUST zeroize all RNG state and secrets
     /// - The secret τ must never be stored or transmitted
     pub fn contribute<R: RngCore>(&mut self, rng: &mut R) -> Result<(), KzgError> {
-        let previous = self.contributions.last().unwrap();
+        let previous = self.contributions.last()
+            .ok_or_else(|| KzgError::DegreeIsZero)?;
 
         // Generate random tau for this participant
         let tau = E::ScalarField::rand(rng);
@@ -229,12 +230,16 @@ impl<E: Pairing> Ceremony<E> {
     ///
     /// This should only be called after all participants have contributed
     /// and all contributions have been verified.
-    pub fn finalize(self) -> PowersOfTau<E> {
-        let final_contribution = self.contributions.into_iter().last().unwrap();
-        PowersOfTau {
+    ///
+    /// # Errors
+    /// Returns `KzgError::DegreeIsZero` if no contributions have been made.
+    pub fn finalize(self) -> Result<PowersOfTau<E>, KzgError> {
+        let final_contribution = self.contributions.into_iter().last()
+            .ok_or_else(|| KzgError::DegreeIsZero)?;
+        Ok(PowersOfTau {
             powers_of_g: final_contribution.powers_of_g,
             powers_of_h: final_contribution.powers_of_h,
-        }
+        })
     }
 
     /// Get the number of participants so far
@@ -257,7 +262,7 @@ mod tests {
         let ceremony = Ceremony::<E>::new(max_degree, &mut rng).unwrap();
         assert_eq!(ceremony.num_participants(), 1);
 
-        let params = ceremony.finalize();
+        let params = ceremony.finalize().unwrap();
         assert_eq!(params.powers_of_g.len(), max_degree + 1);
         assert_eq!(params.powers_of_h.len(), max_degree + 1);
     }
@@ -282,7 +287,7 @@ mod tests {
             assert!(ceremony.verify_contribution(i));
         }
 
-        let params = ceremony.finalize();
+        let params = ceremony.finalize().unwrap();
         assert_eq!(params.powers_of_g.len(), max_degree + 1);
         assert_eq!(params.powers_of_h.len(), max_degree + 1);
     }

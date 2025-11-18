@@ -93,7 +93,7 @@ pub fn agg_dec<E: Pairing>(
     
     // Must have at least t+1 parties selected (including dummy party) for threshold t
     if num_selected < t + 1 {
-        return Err(SteError::ValidationError(
+        return Err(SteError::InvalidThreshold(
             format!(
                 "Insufficient parties selected: need at least {} parties (threshold t={}), but only {} selected",
                 t + 1, t, num_selected
