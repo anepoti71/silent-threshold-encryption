@@ -1,9 +1,7 @@
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::io::BufReader;
 use std::sync::Arc;
-use tokio_rustls::rustls::{
-    self, client::danger::ServerCertVerifier, ClientConfig, RootCertStore, ServerConfig,
-};
+use tokio_rustls::rustls::{self, ClientConfig, RootCertStore, ServerConfig};
 
 /// Generate a self-signed certificate for testing/development purposes
 pub fn generate_self_signed_cert(
@@ -142,8 +140,12 @@ pub fn load_certs(
 pub fn create_client_config_with_roots(
     roots: Vec<CertificateDer<'static>>,
 ) -> Result<Arc<ClientConfig>, Box<dyn std::error::Error>> {
+    if roots.is_empty() {
+        return Err("No certificates provided for server pinning".into());
+    }
     let mut root_store = RootCertStore::empty();
     for cert in roots {
+        ensure_ca_certificate(&cert)?;
         root_store.add(cert)?;
     }
 
@@ -152,4 +154,90 @@ pub fn create_client_config_with_roots(
         .with_no_client_auth();
 
     Ok(Arc::new(config))
+}
+
+fn ensure_ca_certificate(cert: &CertificateDer<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    if !basic_constraints_ca_true(cert.as_ref())? {
+        return Err("Pinned certificate must be a CA certificate (basicConstraints CA=true). \
+Provide the certificate authority that signed the coordinator's TLS certificate."
+            .into());
+    }
+    Ok(())
+}
+
+fn basic_constraints_ca_true(der: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
+    const BASIC_CONSTRAINTS_OID: &[u8] = &[0x06, 0x03, 0x55, 0x1d, 0x13];
+    let mut idx = 0;
+    while let Some(pos) = find_subsequence(&der[idx..], BASIC_CONSTRAINTS_OID) {
+        let mut cursor = idx + pos + BASIC_CONSTRAINTS_OID.len();
+
+        // Skip optional critical flag (BOOLEAN)
+        if cursor < der.len() && der[cursor] == 0x01 {
+            cursor += 1;
+            let (len, consumed) = read_der_length(&der[cursor..])?;
+            cursor += consumed + len;
+        }
+
+        // Next must be OCTET STRING containing BasicConstraints
+        if cursor >= der.len() || der[cursor] != 0x04 {
+            idx += pos + 1;
+            continue;
+        }
+        cursor += 1;
+        let (octet_len, consumed) = read_der_length(&der[cursor..])?;
+        cursor += consumed;
+        if cursor + octet_len > der.len() {
+            return Err("Malformed BasicConstraints extension".into());
+        }
+        let ext = &der[cursor..cursor + octet_len];
+
+        // Parse BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE, ... }
+        if ext.is_empty() || ext[0] != 0x30 {
+            return Err("Malformed BasicConstraints value".into());
+        }
+        let mut inner = 1;
+        let (seq_len, seq_consumed) = read_der_length(&ext[inner..])?;
+        inner += seq_consumed;
+        if seq_len == 0 || inner >= ext.len() {
+            return Ok(false);
+        }
+        if ext[inner] != 0x01 {
+            // No explicit boolean -> defaults to FALSE
+            return Ok(false);
+        }
+        inner += 1;
+        let (bool_len, bool_consumed) = read_der_length(&ext[inner..])?;
+        inner += bool_consumed;
+        if bool_len == 0 || inner + bool_len > ext.len() {
+            return Err("Malformed BasicConstraints boolean".into());
+        }
+        let val = ext[inner];
+        return Ok(val != 0x00);
+    }
+    Ok(false)
+}
+
+fn read_der_length(bytes: &[u8]) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    if bytes.is_empty() {
+        return Err("Unexpected end of DER data".into());
+    }
+    let first = bytes[0];
+    if first & 0x80 == 0 {
+        return Ok((first as usize, 1));
+    }
+    let num_bytes = (first & 0x7f) as usize;
+    if num_bytes == 0 || num_bytes > 4 || bytes.len() < 1 + num_bytes {
+        return Err("Invalid DER length".into());
+    }
+    let mut len = 0usize;
+    for &b in &bytes[1..=num_bytes] {
+        len = (len << 8) | b as usize;
+    }
+    Ok((len, 1 + num_bytes))
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }

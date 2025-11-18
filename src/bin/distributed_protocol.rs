@@ -66,6 +66,7 @@ mod distributed {
     use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
     use ark_std::{rand::RngCore, UniformRand, Zero};
     use bincode::{deserialize, serialize};
+    use blake2::{Blake2b512, Digest};
     use clap::{Parser, Subcommand};
     use rand::{rngs::StdRng, SeedableRng};
     use serde::{Deserialize, Serialize};
@@ -77,6 +78,7 @@ mod distributed {
         setup::{AggregateKey, LagrangePowers, PublicKey, SecretKey},
     };
     use std::collections::HashMap;
+    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio_rustls::TlsAcceptor;
@@ -89,9 +91,6 @@ mod distributed {
     type Fr = <E as Pairing>::ScalarField;
     type UniPoly381 = DensePolynomial<<E as Pairing>::ScalarField>;
 
-    // Type alias for distributed protocol errors
-    type DistributedResult<T> = Result<T, Box<dyn std::error::Error>>;
-
     // ============================================================================
     // Protocol Messages
     // ============================================================================
@@ -103,6 +102,7 @@ mod distributed {
         RequestPublicKey {
             party_id: usize,
             lagrange_bytes: Vec<u8>, // Serialized Lagrange powers
+            lagrange_hash: [u8; 32],
             n: usize,
         },
         /// Broadcast ciphertext to all parties
@@ -182,9 +182,9 @@ mod distributed {
         n: usize,
         t: usize,
         port: u16,
-        tau: SensitiveScalar<Fr>,
         kzg_params: PowersOfTau<E>,
-        lagrange_params: LagrangePowers<E>,
+        lagrange_bytes: Vec<u8>,
+        lagrange_hash: [u8; 32],
         public_keys: HashMap<usize, PublicKey<E>>,
         partial_decryptions: HashMap<usize, G2>,
         party_connections: HashMap<usize, tokio_rustls::server::TlsStream<TcpStream>>,
@@ -211,6 +211,11 @@ mod distributed {
 
             println!("🔧 Coordinator: Preprocessing Lagrange powers...");
             let lagrange_params = LagrangePowers::<E>::new(*tau.expose_secret(), n)?;
+            let mut lagrange_bytes = Vec::new();
+            lagrange_params.serialize_compressed(&mut lagrange_bytes)?;
+            let lagrange_hash_vec = Blake2b512::digest(&lagrange_bytes);
+            let mut lagrange_hash = [0u8; 32];
+            lagrange_hash.copy_from_slice(&lagrange_hash_vec[..32]);
 
             println!("✓ Coordinator: Setup complete");
 
@@ -218,9 +223,9 @@ mod distributed {
                 n,
                 t,
                 port,
-                tau,
                 kzg_params,
-                lagrange_params,
+                lagrange_bytes,
+                lagrange_hash,
                 public_keys: HashMap::new(),
                 partial_decryptions: HashMap::new(),
                 party_connections: HashMap::new(),
@@ -353,16 +358,12 @@ mod distributed {
         }
 
         async fn request_public_keys(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-            // Serialize preprocessed Lagrange parameters once and send to all parties
-            let mut lagrange_bytes = Vec::new();
-            self.lagrange_params
-                .serialize_compressed(&mut lagrange_bytes)?;
-
             // Send requests to all parties
             for party_id in 0..self.n {
                 let msg = CoordinatorMessage::RequestPublicKey {
                     party_id,
-                    lagrange_bytes: lagrange_bytes.clone(),
+                    lagrange_bytes: self.lagrange_bytes.clone(),
+                    lagrange_hash: self.lagrange_hash,
                     n: self.n,
                 };
                 self.send_to_party(party_id, &msg).await?;
@@ -506,6 +507,8 @@ mod distributed {
         coordinator_addr: String,
         server_cert_path: Option<String>,
         allow_insecure: bool,
+        lagrange_cache: Option<([u8; 32], Arc<LagrangePowers<E>>)>,
+        bad_lagrange_digest: Option<[u8; 32]>,
         secret_key: Option<SecretKey<E>>,
     }
 
@@ -522,6 +525,8 @@ mod distributed {
                 coordinator_addr,
                 server_cert_path,
                 allow_insecure,
+                lagrange_cache: None,
+                bad_lagrange_digest: None,
                 secret_key: None,
             }
         }
@@ -539,7 +544,13 @@ mod distributed {
                     self.id, cert_path
                 );
                 let certs = tls_config::load_certs(cert_path)?;
-                tls_config::create_client_config_with_roots(certs)?
+                tls_config::create_client_config_with_roots(certs).map_err(|e| {
+                    format!(
+                        "Failed to initialize pinned certificate store ({}). \
+Use the CA certificate that signed the coordinator's TLS certificate.",
+                        e
+                    )
+                })?
             } else {
                 if !self.allow_insecure {
                     return Err("Server certificate path missing. Provide --server-cert or use --allow-insecure for development".into());
@@ -574,14 +585,20 @@ mod distributed {
                     CoordinatorMessage::RequestPublicKey {
                         party_id,
                         lagrange_bytes,
+                        lagrange_hash,
                         n,
                     } => {
                         if party_id != self.id {
                             continue;
                         }
                         println!("\n📨 Party {}: Received request for public key", self.id);
-                        self.handle_public_key_request(&mut stream, &lagrange_bytes, n)
-                            .await?;
+                        self.handle_public_key_request(
+                            &mut stream,
+                            &lagrange_bytes,
+                            lagrange_hash,
+                            n,
+                        )
+                        .await?;
                     }
                     CoordinatorMessage::RequestPartialDecryption { party_id, ct_bytes } => {
                         if party_id != self.id {
@@ -613,10 +630,19 @@ mod distributed {
             &mut self,
             stream: &mut tokio_rustls::client::TlsStream<TcpStream>,
             lagrange_bytes: &[u8],
+            lagrange_hash: [u8; 32],
             n: usize,
         ) -> Result<(), Box<dyn std::error::Error>> {
-            // Deserialize the coordinator-provided Lagrange powers
-            let lagrange_params = LagrangePowers::<E>::deserialize_compressed(lagrange_bytes)?;
+            // Obtain Lagrange parameters from cache or deserialize once
+            let lagrange_params = if let Some((cached_hash, params)) = &self.lagrange_cache {
+                if cached_hash == &lagrange_hash {
+                    params.clone()
+                } else {
+                    self.load_lagrange_params(lagrange_bytes, lagrange_hash)?
+                }
+            } else {
+                self.load_lagrange_params(lagrange_bytes, lagrange_hash)?
+            };
 
             // Generate secret key
             let mut rng = SecureRng::new();
@@ -634,7 +660,7 @@ mod distributed {
             }
 
             // Compute public key using provided Lagrange parameters
-            let pk = sk.lagrange_get_pk(self.id, &lagrange_params, n)?;
+            let pk = sk.lagrange_get_pk(self.id, lagrange_params.as_ref(), n)?;
 
             // Store secret key for later
             self.secret_key = Some(sk);
@@ -685,6 +711,39 @@ mod distributed {
             );
 
             Ok(())
+        }
+
+        fn load_lagrange_params(
+            &mut self,
+            bytes: &[u8],
+            expected_hash: [u8; 32],
+        ) -> Result<Arc<LagrangePowers<E>>, Box<dyn std::error::Error>> {
+            if bytes.is_empty() {
+                return Err("Missing Lagrange parameters payload".into());
+            }
+            let digest_vec = Blake2b512::digest(bytes);
+            let mut digest = [0u8; 32];
+            digest.copy_from_slice(&digest_vec[..32]);
+            if self
+                .bad_lagrange_digest
+                .as_ref()
+                .map_or(false, |bad| bad == &digest)
+            {
+                return Err("Lagrange parameters previously rejected".into());
+            }
+            if digest != expected_hash {
+                self.bad_lagrange_digest = Some(digest);
+                return Err("Lagrange parameters hash mismatch".into());
+            }
+            let params = LagrangePowers::<E>::deserialize_compressed(bytes)
+                .map_err(|e| {
+                    self.bad_lagrange_digest = Some(digest);
+                    e
+                })?;
+            let arc = Arc::new(params);
+            self.lagrange_cache = Some((expected_hash, arc.clone()));
+            self.bad_lagrange_digest = None;
+            Ok(arc)
         }
 
         async fn send_message(

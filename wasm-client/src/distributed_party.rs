@@ -4,6 +4,7 @@ use web_sys::{MessageEvent, WebSocket, ErrorEvent, CloseEvent};
 use ark_bls12_381::Bls12_381 as E;
 use ark_ec::pairing::Pairing;
 use ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
+use blake2::{Blake2b512, Digest};
 use serde::{Serialize, Deserialize};
 use silent_threshold_encryption::{
     setup::{SecretKey, LagrangePowers},
@@ -19,6 +20,7 @@ pub enum CoordinatorMessage {
     RequestPublicKey {
         party_id: usize,
         lagrange_bytes: Vec<u8>,
+        lagrange_hash: Vec<u8>,
         n: usize,
     },
     Ciphertext {
@@ -61,6 +63,7 @@ pub enum PartyMessage {
 pub struct DistributedParty {
     id: usize,
     secret_key: Option<Vec<u8>>,
+    lagrange_cache: Option<(Vec<u8>, LagrangePowers<E>)>,
     ws: Option<WebSocket>,
     on_message_callback: Option<js_sys::Function>,
     on_status_callback: Option<js_sys::Function>,
@@ -74,6 +77,7 @@ impl DistributedParty {
         DistributedParty {
             id: party_id,
             secret_key: None,
+            lagrange_cache: None,
             ws: None,
             on_message_callback: None,
             on_status_callback: None,
@@ -216,6 +220,7 @@ impl DistributedParty {
     pub fn handle_public_key_request(
         &mut self,
         lagrange_bytes_js: &[u8],
+        lagrange_hash_js: &[u8],
         n: usize,
     ) -> Result<(), JsValue> {
         self.log_status("Generating secret key...");
@@ -232,10 +237,9 @@ impl DistributedParty {
             self.log_status("Generated secret key");
         }
 
-        // Deserialize coordinator-provided Lagrange powers
+        // Deserialize coordinator-provided Lagrange powers (with caching)
         self.log_status("Computing public key...");
-        let lagrange_params = LagrangePowers::<E>::deserialize_compressed(lagrange_bytes_js)
-            .map_err(|e| JsValue::from_str(&format!("Failed to deserialize Lagrange powers: {:?}", e)))?;
+        let lagrange_params = self.load_lagrange_params(lagrange_bytes_js, lagrange_hash_js)?;
 
         let pk = sk.lagrange_get_pk(self.id, &lagrange_params, n)
             .map_err(|e| JsValue::from_str(&format!("Failed to generate public key: {:?}", e)))?;
@@ -260,6 +264,39 @@ impl DistributedParty {
         self.log_status("Sent public key to coordinator");
 
         Ok(())
+    }
+
+    fn load_lagrange_params(
+        &mut self,
+        lagrange_bytes_js: &[u8],
+        lagrange_hash_js: &[u8],
+    ) -> Result<LagrangePowers<E>, JsValue> {
+        if lagrange_hash_js.len() != 32 {
+            return Err(JsValue::from_str("Invalid lagrange hash length"));
+        }
+
+        if let Some((ref cached_hash, ref params)) = self.lagrange_cache {
+            if cached_hash.as_slice() == lagrange_hash_js {
+                return Ok(params.clone());
+            }
+        }
+
+        if lagrange_bytes_js.is_empty() {
+            return Err(JsValue::from_str("Missing lagrange parameters payload"));
+        }
+
+        let computed_hash = Blake2b512::digest(lagrange_bytes_js);
+        let mut digest = [0u8; 32];
+        digest.copy_from_slice(&computed_hash[..32]);
+        if digest.as_slice() != lagrange_hash_js {
+            return Err(JsValue::from_str("Lagrange parameter hash mismatch"));
+        }
+
+        let lagrange_params = LagrangePowers::<E>::deserialize_compressed(lagrange_bytes_js)
+            .map_err(|e| JsValue::from_str(&format!("Failed to deserialize Lagrange powers: {:?}", e)))?;
+
+        self.lagrange_cache = Some((lagrange_hash_js.to_vec(), lagrange_params.clone()));
+        Ok(lagrange_params)
     }
 
     /// Handle partial decryption request from coordinator

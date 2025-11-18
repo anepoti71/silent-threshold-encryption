@@ -336,8 +336,9 @@
                     case 'RequestPublicKey':
                         addLog('🔑 Handling public key request...');
                         const lagrangeBytes = new Uint8Array(data.lagrange_bytes);
+                        const lagrangeHash = new Uint8Array(data.lagrange_hash);
                         const n = data.n;
-                        party.handlePublicKeyRequest(lagrangeBytes, n);
+                        party.handlePublicKeyRequest(lagrangeBytes, lagrangeHash, n);
                         updateConnectionStatus('Generated and sent public key', 'success');
                         break;
 
