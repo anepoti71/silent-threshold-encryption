@@ -158,9 +158,11 @@ pub fn create_client_config_with_roots(
 
 fn ensure_ca_certificate(cert: &CertificateDer<'_>) -> Result<(), Box<dyn std::error::Error>> {
     if !basic_constraints_ca_true(cert.as_ref())? {
-        return Err("Pinned certificate must be a CA certificate (basicConstraints CA=true). \
+        return Err(
+            "Pinned certificate must be a CA certificate (basicConstraints CA=true). \
 Provide the certificate authority that signed the coordinator's TLS certificate."
-            .into());
+                .into(),
+        );
     }
     Ok(())
 }

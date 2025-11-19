@@ -68,6 +68,8 @@ pub mod decryption;
 pub mod encryption;
 pub mod error;
 pub mod kzg;
+#[cfg(feature = "distributed")]
+pub mod p2p;
 pub mod security;
 pub mod setup;
 pub mod trusted_setup;

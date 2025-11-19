@@ -10,6 +10,28 @@ Rust implementation of silent threshold encryption from [ePrint:2024/263](https:
 - **Constant-Time Operations**: Timing attack resistance for sensitive operations
 - **Enhanced Error Handling**: Comprehensive error types with `thiserror`
 
+## P2P Networking Stack
+
+Fully decentralized deployments can build on the dedicated peer-to-peer stack under `src/p2p/`:
+
+- `p2p::network` wires discovery, gossip and TCP transport into a reusable `P2PNetwork`
+- `p2p::libp2p_network` provides an alternative transport backed by `rust-libp2p` (Noise + Gossipsub + mDNS)
+- `p2p::transport` exposes authenticated stream management plus message framing
+- `p2p::discovery` maintains peer metadata, bootstrap seeds and party-to-peer mapping
+- `p2p::gossip` handles message deduplication and fanout-based propagation
+
+The previous `src/network` scaffolding has been removed to avoid duplicating these responsibilities.
+
+### Shared parameter artifacts
+
+Sample parameters for a 4-party deployment live in `artifacts/p2p/` (`kzg_params.bin` and `lagrange_params.bin`). The `p2p_peer` binary defaults to those paths, so you can immediately launch peers without a separate setup step. To regenerate or create parameters for a different party count, run:
+
+```bash
+cargo run --bin generate_peer_params --features distributed --release -- --parties 8 --seed 123 --output-dir artifacts/p2p
+```
+
+Point `p2p_peer --kzg-params` and `--lagrange-params` at the generated files when booting your network.
+
 ## Quick Start
 
 ### Run Demo (4 parties, threshold 2)

@@ -735,11 +735,10 @@ Use the CA certificate that signed the coordinator's TLS certificate.",
                 self.bad_lagrange_digest = Some(digest);
                 return Err("Lagrange parameters hash mismatch".into());
             }
-            let params = LagrangePowers::<E>::deserialize_compressed(bytes)
-                .map_err(|e| {
-                    self.bad_lagrange_digest = Some(digest);
-                    e
-                })?;
+            let params = LagrangePowers::<E>::deserialize_compressed(bytes).map_err(|e| {
+                self.bad_lagrange_digest = Some(digest);
+                e
+            })?;
             let arc = Arc::new(params);
             self.lagrange_cache = Some((expected_hash, arc.clone()));
             self.bad_lagrange_digest = None;
@@ -854,6 +853,9 @@ Use the CA certificate that signed the coordinator's TLS certificate.",
 #[cfg(feature = "distributed")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install ring crypto provider");
     distributed::main_async().await
 }
 
