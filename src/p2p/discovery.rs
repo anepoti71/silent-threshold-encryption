@@ -46,33 +46,67 @@ impl PeerDiscovery {
 
     /// Add a known peer
     pub fn add_peer(&self, peer: PeerInfo) {
-        let mut peers = self.peers.write().unwrap();
-        peers.insert(peer.peer_id.clone(), peer);
+        match self.peers.write() {
+            Ok(mut peers) => {
+                peers.insert(peer.peer_id.clone(), peer);
+            }
+            Err(poisoned) => {
+                // Recover from poisoned lock by clearing the poison and using the guard
+                let mut peers = poisoned.into_inner();
+                peers.insert(peer.peer_id.clone(), peer);
+            }
+        }
     }
 
     /// Remove a peer
     pub fn remove_peer(&self, peer_id: &PeerId) {
-        let mut peers = self.peers.write().unwrap();
-        peers.remove(peer_id);
+        match self.peers.write() {
+            Ok(mut peers) => {
+                peers.remove(peer_id);
+            }
+            Err(poisoned) => {
+                let mut peers = poisoned.into_inner();
+                peers.remove(peer_id);
+            }
+        }
     }
 
     /// Get all known peers
     pub fn get_peers(&self) -> Vec<PeerInfo> {
-        let peers = self.peers.read().unwrap();
-        peers.values().cloned().collect()
+        match self.peers.read() {
+            Ok(peers) => peers.values().cloned().collect(),
+            Err(poisoned) => {
+                let peers = poisoned.into_inner();
+                peers.values().cloned().collect()
+            }
+        }
     }
 
     /// Get a specific peer
     pub fn get_peer(&self, peer_id: &PeerId) -> Option<PeerInfo> {
-        let peers = self.peers.read().unwrap();
-        peers.get(peer_id).cloned()
+        match self.peers.read() {
+            Ok(peers) => peers.get(peer_id).cloned(),
+            Err(poisoned) => {
+                let peers = poisoned.into_inner();
+                peers.get(peer_id).cloned()
+            }
+        }
     }
 
     /// Update peer last seen timestamp
     pub fn update_peer_seen(&self, peer_id: &PeerId) {
-        let mut peers = self.peers.write().unwrap();
-        if let Some(peer) = peers.get_mut(peer_id) {
-            peer.last_seen = current_timestamp();
+        match self.peers.write() {
+            Ok(mut peers) => {
+                if let Some(peer) = peers.get_mut(peer_id) {
+                    peer.last_seen = current_timestamp();
+                }
+            }
+            Err(poisoned) => {
+                let mut peers = poisoned.into_inner();
+                if let Some(peer) = peers.get_mut(peer_id) {
+                    peer.last_seen = current_timestamp();
+                }
+            }
         }
     }
 
@@ -83,8 +117,13 @@ impl PeerDiscovery {
 
     /// Check if peer already known
     pub fn is_known(&self, peer_id: &PeerId) -> bool {
-        let peers = self.peers.read().unwrap();
-        peers.contains_key(peer_id)
+        match self.peers.read() {
+            Ok(peers) => peers.contains_key(peer_id),
+            Err(poisoned) => {
+                let peers = poisoned.into_inner();
+                peers.contains_key(peer_id)
+            }
+        }
     }
 
     /// Get our peer ID
@@ -94,16 +133,27 @@ impl PeerDiscovery {
 
     /// Clean up stale peers (not seen for timeout period)
     pub fn cleanup_stale_peers(&self, timeout_secs: u64) {
-        let mut peers = self.peers.write().unwrap();
         let now = current_timestamp();
-
-        peers.retain(|_, peer| now - peer.last_seen < timeout_secs);
+        match self.peers.write() {
+            Ok(mut peers) => {
+                peers.retain(|_, peer| now - peer.last_seen < timeout_secs);
+            }
+            Err(poisoned) => {
+                let mut peers = poisoned.into_inner();
+                peers.retain(|_, peer| now - peer.last_seen < timeout_secs);
+            }
+        }
     }
 
     /// Get number of active peers
     pub fn peer_count(&self) -> usize {
-        let peers = self.peers.read().unwrap();
-        peers.len()
+        match self.peers.read() {
+            Ok(peers) => peers.len(),
+            Err(poisoned) => {
+                let peers = poisoned.into_inner();
+                peers.len()
+            }
+        }
     }
 
     /// Check if we have enough peers for threshold operation
@@ -113,20 +163,36 @@ impl PeerDiscovery {
 
     /// Get peers by party ID
     pub fn get_peers_by_party(&self) -> HashMap<usize, PeerInfo> {
-        let peers = self.peers.read().unwrap();
-        peers
-            .values()
-            .filter_map(|peer| peer.party_id.map(|id| (id, peer.clone())))
-            .collect()
+        match self.peers.read() {
+            Ok(peers) => peers
+                .values()
+                .filter_map(|peer| peer.party_id.map(|id| (id, peer.clone())))
+                .collect(),
+            Err(poisoned) => {
+                let peers = poisoned.into_inner();
+                peers
+                    .values()
+                    .filter_map(|peer| peer.party_id.map(|id| (id, peer.clone())))
+                    .collect()
+            }
+        }
     }
 
     /// Find a peer by party ID
     pub fn find_peer_by_party(&self, party_id: usize) -> Option<PeerInfo> {
-        let peers = self.peers.read().unwrap();
-        peers
-            .values()
-            .find(|peer| peer.party_id == Some(party_id))
-            .cloned()
+        match self.peers.read() {
+            Ok(peers) => peers
+                .values()
+                .find(|peer| peer.party_id == Some(party_id))
+                .cloned(),
+            Err(poisoned) => {
+                let peers = poisoned.into_inner();
+                peers
+                    .values()
+                    .find(|peer| peer.party_id == Some(party_id))
+                    .cloned()
+            }
+        }
     }
 }
 
@@ -134,7 +200,7 @@ impl PeerDiscovery {
 fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
         .as_secs()
 }
 

@@ -97,7 +97,11 @@ impl P2PNetwork {
         ));
 
         // Parse listen address
-        let listen_addr: SocketAddr = config.listen_addr.parse().expect("Invalid listen address");
+        let listen_addr: SocketAddr = config.listen_addr.parse()
+            .unwrap_or_else(|_| {
+                eprintln!("Invalid listen address '{}', using 0.0.0.0:0", config.listen_addr);
+                "0.0.0.0:0".parse().unwrap()
+            });
 
         let transport = Arc::new(P2PTransport::new(config.peer_id.clone(), listen_addr));
 
@@ -581,7 +585,7 @@ fn generate_peer_id() -> PeerId {
 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
         .as_nanos();
 
     let mut hasher = Blake2b512::new();
@@ -594,7 +598,7 @@ fn generate_peer_id() -> PeerId {
 fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
         .as_secs()
 }
 

@@ -66,8 +66,15 @@ impl GossipProtocol {
     where
         H: MessageHandler + Send + Sync + 'static,
     {
-        let mut handlers = self.handlers.write().unwrap();
-        handlers.insert(message_type, Box::new(handler));
+        match self.handlers.write() {
+            Ok(mut handlers) => {
+                handlers.insert(message_type, Box::new(handler));
+            }
+            Err(poisoned) => {
+                let mut handlers = poisoned.into_inner();
+                handlers.insert(message_type, Box::new(handler));
+            }
+        }
     }
 
     /// Broadcast a message to the network
@@ -103,10 +110,16 @@ impl GossipProtocol {
 
         // Process the message locally
         let message_type = format!("{:?}", gossip.payload.message_type());
-        if let Some(handler) = self.handlers.read().unwrap().get(&message_type) {
-            if let Err(e) = handler.handle(&gossip.payload) {
-                return GossipResult::HandlerError(e);
+        let handler_result = match self.handlers.read() {
+            Ok(handlers) => handlers.get(&message_type).map(|h| h.handle(&gossip.payload)),
+            Err(poisoned) => {
+                let handlers = poisoned.into_inner();
+                handlers.get(&message_type).map(|h| h.handle(&gossip.payload))
             }
+        };
+
+        if let Some(Err(e)) = handler_result {
+            return GossipResult::HandlerError(e);
         }
 
         // Determine if we should forward
@@ -123,15 +136,27 @@ impl GossipProtocol {
 
     /// Check if message has been seen
     pub fn has_seen(&self, message_id: &MessageId) -> bool {
-        let seen = self.seen_messages.read().unwrap();
-        seen.contains_key(message_id)
+        match self.seen_messages.read() {
+            Ok(seen) => seen.contains_key(message_id),
+            Err(poisoned) => {
+                let seen = poisoned.into_inner();
+                seen.contains_key(message_id)
+            }
+        }
     }
 
     /// Mark message as seen
     fn mark_as_seen(&self, message_id: &MessageId) {
-        let mut seen = self.seen_messages.write().unwrap();
         let timestamp = current_timestamp();
-        seen.insert(*message_id, timestamp);
+        match self.seen_messages.write() {
+            Ok(mut seen) => {
+                seen.insert(*message_id, timestamp);
+            }
+            Err(poisoned) => {
+                let mut seen = poisoned.into_inner();
+                seen.insert(*message_id, timestamp);
+            }
+        }
     }
 
     /// Compute message ID from message content
@@ -154,10 +179,16 @@ impl GossipProtocol {
 
     /// Clean up old seen messages
     pub fn cleanup_old_messages(&self) {
-        let mut seen = self.seen_messages.write().unwrap();
         let now = current_timestamp();
-
-        seen.retain(|_, timestamp| now - *timestamp < CACHE_TIMEOUT);
+        match self.seen_messages.write() {
+            Ok(mut seen) => {
+                seen.retain(|_, timestamp| now - *timestamp < CACHE_TIMEOUT);
+            }
+            Err(poisoned) => {
+                let mut seen = poisoned.into_inner();
+                seen.retain(|_, timestamp| now - *timestamp < CACHE_TIMEOUT);
+            }
+        }
     }
 
     /// Get fanout value
@@ -167,8 +198,13 @@ impl GossipProtocol {
 
     /// Get number of seen messages
     pub fn seen_count(&self) -> usize {
-        let seen = self.seen_messages.read().unwrap();
-        seen.len()
+        match self.seen_messages.read() {
+            Ok(seen) => seen.len(),
+            Err(poisoned) => {
+                let seen = poisoned.into_inner();
+                seen.len()
+            }
+        }
     }
 }
 
@@ -203,7 +239,7 @@ pub enum GossipResult {
 fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
         .as_secs()
 }
 

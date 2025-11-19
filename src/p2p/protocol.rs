@@ -53,6 +53,7 @@ pub struct PeerConfig {
     pub lagrange_params_path: PathBuf,
     pub mode: PeerRuntimeMode,
     pub auto_decrypt: bool,
+    pub enable_mdns: bool,
 }
 
 /// Determines whether the peer should initiate an example encryption run.
@@ -119,6 +120,7 @@ impl PeerNode {
             listen_addresses: self.config.listen_addresses.clone(),
             bootstrap_nodes: self.config.bootstrap_nodes.clone(),
             gossip_topic: self.config.gossip_topic.clone(),
+            enable_mdns: self.config.enable_mdns,
         };
 
         let network = Arc::new(
@@ -812,7 +814,7 @@ impl ProtocolState {
             };
             self.decrypt_sessions
                 .get_mut(&request_id)
-                .unwrap()
+                .expect("Session must exist since we just created it")
                 .responses
                 .insert(self.config.party_id, pd);
         }

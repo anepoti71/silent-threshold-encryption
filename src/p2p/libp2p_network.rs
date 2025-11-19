@@ -10,7 +10,9 @@ use libp2p::identity;
 use libp2p::mdns;
 use libp2p::noise;
 use libp2p::ping;
-use libp2p::swarm::{Config as SwarmConfig, NetworkBehaviour, Swarm, SwarmEvent};
+use libp2p::swarm::{
+    behaviour::toggle::Toggle, Config as SwarmConfig, NetworkBehaviour, Swarm, SwarmEvent,
+};
 use libp2p::{identify, tcp, yamux, PeerId, Transport};
 use tokio::sync::{mpsc, Mutex};
 
@@ -22,6 +24,7 @@ pub struct Libp2pConfig {
     pub listen_addresses: Vec<String>,
     pub bootstrap_nodes: Vec<String>,
     pub gossip_topic: String,
+    pub enable_mdns: bool,
 }
 
 impl Default for Libp2pConfig {
@@ -30,6 +33,7 @@ impl Default for Libp2pConfig {
             listen_addresses: vec!["/ip4/0.0.0.0/tcp/0".to_string()],
             bootstrap_nodes: Vec::new(),
             gossip_topic: DEFAULT_TOPIC.to_string(),
+            enable_mdns: true,
         }
     }
 }
@@ -70,8 +74,20 @@ impl Libp2pNetwork {
             .boxed();
 
         let gossipsub = build_gossipsub(&keypair)?;
-        let mdns_behaviour = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)
-            .map_err(|e| Libp2pNetworkError::Io(e))?;
+        let mdns_behaviour = if config.enable_mdns {
+            match mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id) {
+                Ok(behaviour) => Toggle::from(Some(behaviour)),
+                Err(e) => {
+                    eprintln!(
+                        "mDNS unavailable ({}). Continuing without local discovery.",
+                        e
+                    );
+                    Toggle::from(None)
+                }
+            }
+        } else {
+            Toggle::from(None)
+        };
         let identify = identify::Behaviour::new(identify::Config::new(
             IDENTIFY_PROTOCOL.into(),
             keypair.public(),
@@ -191,7 +207,7 @@ pub enum Libp2pEvent {
 #[behaviour(out_event = "SteEvent")]
 struct SteBehaviour {
     gossipsub: Gossipsub,
-    mdns: mdns::tokio::Behaviour,
+    mdns: Toggle<mdns::tokio::Behaviour>,
     identify: identify::Behaviour,
     ping: ping::Behaviour,
 }
@@ -268,11 +284,13 @@ async fn run_swarm(
     mut command_rx: mpsc::Receiver<NetworkCommand>,
     event_tx: mpsc::Sender<Libp2pEvent>,
 ) {
-    for addr in bootstrap {
+    for addr in &bootstrap {
         if let Err(e) = Swarm::dial(&mut swarm, addr.clone()) {
             eprintln!("Bootstrap dial failed for {addr}: {e}");
         }
     }
+
+    let mut bootstrap_interval = tokio::time::interval(std::time::Duration::from_secs(5));
 
     loop {
         tokio::select! {
@@ -326,6 +344,15 @@ async fn run_swarm(
                         let _ = event_tx.send(Libp2pEvent::PeerDisconnected(peer_id.to_string())).await;
                     }
                     _ => {}
+                }
+            }
+            _ = bootstrap_interval.tick() => {
+                if !bootstrap.is_empty() {
+                    for addr in &bootstrap {
+                        if let Err(e) = Swarm::dial(&mut swarm, addr.clone()) {
+                            eprintln!("Bootstrap dial retry failed for {addr}: {e}");
+                        }
+                    }
                 }
             }
         }

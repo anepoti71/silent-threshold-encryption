@@ -60,6 +60,10 @@ struct Cli {
     /// Automatically request partial decryptions for every ciphertext
     #[arg(long = "auto-decrypt", default_value_t = false)]
     auto_decrypt: bool,
+
+    /// Disable mDNS peer discovery (useful in sandboxed environments)
+    #[arg(long = "disable-mdns", default_value_t = false)]
+    disable_mdns: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -93,6 +97,7 @@ async fn main() {
         lagrange_params_path: cli.lagrange_params,
         mode: cli.mode.into(),
         auto_decrypt: cli.auto_decrypt,
+        enable_mdns: !cli.disable_mdns,
     };
 
     let node = PeerNode::new(config);
