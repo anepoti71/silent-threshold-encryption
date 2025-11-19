@@ -714,30 +714,80 @@ impl ProtocolState {
         if self.aggregate_key.is_some() {
             return Ok(());
         }
-        if self.party_keys.len() != self.config.n {
+
+        // Calculate minimum quorum needed (must have at least threshold + 1 parties)
+        let min_quorum = self.config.threshold + 1;
+
+        // Wait until we have at least the minimum quorum
+        if self.party_keys.len() < min_quorum {
+            debug!(
+                "Waiting for minimum quorum: have {} parties, need at least {}",
+                self.party_keys.len(),
+                min_quorum
+            );
             return Ok(());
         }
 
-        let mut ordered = vec![None; self.config.n];
-        for (&id, pk) in &self.party_keys {
-            if id < ordered.len() {
-                ordered[id] = Some(pk.clone());
+        // If we have exactly n parties, build immediately
+        if self.party_keys.len() == self.config.n {
+            let mut ordered = vec![None; self.config.n];
+            for (&id, pk) in &self.party_keys {
+                if id < ordered.len() {
+                    ordered[id] = Some(pk.clone());
+                }
             }
-        }
 
-        if ordered.iter().any(|pk| pk.is_none()) {
+            if ordered.iter().any(|pk| pk.is_none()) {
+                return Ok(());
+            }
+
+            let public_keys: Vec<PublicKey<Curve>> =
+                ordered.into_iter().map(|pk| pk.unwrap()).collect();
+            let agg = AggregateKey::new(public_keys, &self.params)?;
+            self.aggregate_key = Some(agg);
+            info!(
+                "Aggregate key constructed for all {} parties.",
+                self.config.n
+            );
+            self.aggregate_ready.notify_waiters();
             return Ok(());
         }
 
-        let public_keys: Vec<PublicKey<Curve>> =
-            ordered.into_iter().map(|pk| pk.unwrap()).collect();
-        let agg = AggregateKey::new(public_keys, &self.params)?;
-        self.aggregate_key = Some(agg);
-        info!(
-            "Aggregate key constructed for all {} parties.",
-            self.config.n
-        );
-        self.aggregate_ready.notify_waiters();
+        // If we have more than minimum but less than n, we can still proceed
+        // This allows for dynamic peer joining/leaving
+        if self.party_keys.len() >= min_quorum && self.party_keys.len() < self.config.n {
+            info!(
+                "Have {} of {} parties (minimum quorum: {}). Building aggregate key with available parties.",
+                self.party_keys.len(),
+                self.config.n,
+                min_quorum
+            );
+
+            // Build with the parties we have
+            let mut ordered = vec![None; self.config.n];
+            for (&id, pk) in &self.party_keys {
+                if id < ordered.len() {
+                    ordered[id] = Some(pk.clone());
+                }
+            }
+
+            // Check if we can build a valid key with the available parties
+            let available_count = ordered.iter().filter(|pk| pk.is_some()).count();
+            if available_count < min_quorum {
+                return Ok(());
+            }
+
+            let public_keys: Vec<PublicKey<Curve>> =
+                ordered.into_iter().map(|pk| pk.unwrap()).collect();
+            let agg = AggregateKey::new(public_keys, &self.params)?;
+            self.aggregate_key = Some(agg);
+            info!(
+                "Aggregate key constructed with {} parties (quorum-based).",
+                available_count
+            );
+            self.aggregate_ready.notify_waiters();
+        }
+
         Ok(())
     }
 
@@ -901,9 +951,10 @@ fn hash_ciphertext(data: &[u8]) -> MessageId {
 }
 
 fn validate_config(config: &PeerConfig) -> Result<(), PeerError> {
-    if config.n == 0 || !config.n.is_power_of_two() {
+    // Minimum peer count validation (need at least 2 parties for meaningful threshold encryption)
+    if config.n < 2 {
         return Err(PeerError::Config(
-            "n must be a non-zero power of two".to_string(),
+            "n must be at least 2".to_string(),
         ));
     }
     if config.threshold == 0 || config.threshold >= config.n {

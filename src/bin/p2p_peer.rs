@@ -14,11 +14,11 @@ struct Cli {
     #[arg(long = "party-id")]
     party_id: usize,
 
-    /// Total number of parties (must be a power of two)
+    /// Total number of parties (must be at least 2)
     #[arg(long = "parties")]
     parties: usize,
 
-    /// Decryption threshold
+    /// Decryption threshold (must be between 1 and parties-1)
     #[arg(long = "threshold")]
     threshold: usize,
 

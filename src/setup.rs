@@ -8,7 +8,7 @@ use ark_ec::{pairing::Pairing, PrimeGroup};
 use ark_ff::Field;
 use ark_poly::{
     domain::EvaluationDomain, univariate::DensePolynomial, DenseUVPolynomial, Polynomial,
-    Radix2EvaluationDomain,
+    GeneralEvaluationDomain, Radix2EvaluationDomain,
 };
 use ark_serialize::*;
 use ark_std::{rand::RngCore, One, UniformRand, Zero};
@@ -29,25 +29,19 @@ impl<E: Pairing> LagrangePowers<E> {
     ///
     /// # Arguments
     /// * `tau` - The evaluation point (must be non-zero)
-    /// * `n` - The number of parties (must be a power of 2)
+    /// * `n` - The number of parties (must be at least 2)
     ///
     /// # Errors
-    /// Returns an error if tau is zero or n is not a power of 2
+    /// Returns an error if tau is zero or n is less than 2
     pub fn new(tau: E::ScalarField, n: usize) -> Result<Self, SteError> {
         // Validate inputs
-        if n == 0 {
+        if n < 2 {
             return Err(SteError::InvalidParameter(
-                "n must be at least 1".to_string(),
+                "n must be at least 2".to_string(),
             ));
         }
         if tau.is_zero() {
             return Err(SteError::InvalidParameter("tau cannot be zero".to_string()));
-        }
-        if !n.is_power_of_two() {
-            return Err(SteError::InvalidParameter(format!(
-                "n must be a power of 2, got {}",
-                n
-            )));
         }
 
         let mut li_evals: Vec<E::ScalarField> = vec![E::ScalarField::zero(); n];
@@ -204,10 +198,10 @@ impl<E: Pairing> SecretKey<E> {
     /// # Arguments
     /// * `id` - The party ID (must be < n)
     /// * `params` - The KZG parameters (powers of tau)
-    /// * `n` - The number of parties (must be a power of 2)
+    /// * `n` - The number of parties (must be at least 2)
     ///
     /// # Errors
-    /// Returns an error if id >= n, n is not a power of 2, or KZG operations fail
+    /// Returns an error if id >= n, n < 2, or KZG operations fail
     pub fn get_pk(
         &self,
         id: usize,
@@ -221,16 +215,16 @@ impl<E: Pairing> SecretKey<E> {
                 id, n
             )));
         }
-        if !n.is_power_of_two() {
+        if n < 2 {
             return Err(SteError::InvalidParameter(format!(
-                "n must be a power of 2, got {}",
+                "n must be at least 2, got {}",
                 n
             )));
         }
 
-        let domain = Radix2EvaluationDomain::<E::ScalarField>::new(n).ok_or_else(|| {
+        let domain = GeneralEvaluationDomain::<E::ScalarField>::new(n).ok_or_else(|| {
             SteError::DomainError(format!(
-                "Failed to create domain for n = {} (must be a power of 2)",
+                "Failed to create domain for n = {}",
                 n
             ))
         })?;

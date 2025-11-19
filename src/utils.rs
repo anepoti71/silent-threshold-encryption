@@ -1,21 +1,24 @@
 use ark_ff::{FftField, Field};
 use ark_poly::{
     univariate::DensePolynomial, DenseUVPolynomial, EvaluationDomain, Evaluations, Polynomial,
-    Radix2EvaluationDomain,
+    GeneralEvaluationDomain, Radix2EvaluationDomain,
 };
 
-/// Computes the Lagrange basis polynomial L_i(x) that is 1 at omega^i and 0 elsewhere
-/// on the domain {omega^i}_{i \in [n]}.
+/// Computes the Lagrange basis polynomial L_i(x) that is 1 at point i and 0 elsewhere
+/// on the domain {omega^j}_{j \in [n]}.
+///
+/// This function now supports arbitrary n (not just powers of 2) by using GeneralEvaluationDomain,
+/// which falls back to naive interpolation when n is not a power of 2.
 ///
 /// # Arguments
-/// * `n` - The number of points (must be a power of 2)
+/// * `n` - The number of points (must be at least 2)
 /// * `i` - The index (must be < n)
 ///
 /// # Panics
-/// Panics if n is not a power of 2 or if i >= n (in debug mode)
+/// Panics if i >= n (in debug mode)
 pub fn lagrange_poly<F: FftField>(n: usize, i: usize) -> DensePolynomial<F> {
     debug_assert!(i < n);
-    debug_assert!(n.is_power_of_two());
+    debug_assert!(n >= 2, "n must be at least 2");
 
     let mut evals = vec![];
     for j in 0..n {
@@ -23,9 +26,9 @@ pub fn lagrange_poly<F: FftField>(n: usize, i: usize) -> DensePolynomial<F> {
         evals.push(F::from(l_of_x));
     }
 
-    //powers of nth root of unity
-    let domain = Radix2EvaluationDomain::<F>::new(n)
-        .expect("n must be a power of 2 for Radix2EvaluationDomain");
+    // Use GeneralEvaluationDomain which supports both power-of-2 (FFT) and arbitrary n (naive)
+    let domain = GeneralEvaluationDomain::<F>::new(n)
+        .expect("Failed to create evaluation domain");
     let eval_form = Evaluations::from_vec_and_domain(evals, domain);
     //interpolated polynomial over the n points
     eval_form.interpolate()

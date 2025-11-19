@@ -18,7 +18,7 @@ use silent_threshold_encryption::setup::LagrangePowers;
     version
 )]
 struct Args {
-    /// Number of parties (must be a power of two)
+    /// Number of parties (must be at least 2)
     #[arg(long, default_value_t = 4)]
     parties: usize,
 
@@ -33,8 +33,8 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    if !args.parties.is_power_of_two() {
-        return Err("parties must be a power of two".into());
+    if args.parties < 2 {
+        return Err("parties must be at least 2".into());
     }
 
     std::fs::create_dir_all(&args.output_dir)?;
