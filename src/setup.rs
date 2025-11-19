@@ -164,6 +164,21 @@ impl<E: Pairing> PublicKey<E> {
             sk_li_x,
         }
     }
+
+    /// Creates a zero-valued placeholder key for a specific party/index.
+    ///
+    /// This is useful when constructing aggregate keys before every party has
+    /// contributed their real public key.
+    pub fn zero_for_domain(id: usize, domain_size: usize) -> Self {
+        PublicKey {
+            id,
+            bls_pk: E::G1::zero(),
+            sk_li: E::G1::zero(),
+            sk_li_minus0: E::G1::zero(),
+            sk_li_lj_z: vec![E::G1::zero(); domain_size],
+            sk_li_x: E::G1::zero(),
+        }
+    }
 }
 
 impl<E: Pairing> Zeroize for SecretKey<E> {

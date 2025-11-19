@@ -353,6 +353,7 @@ struct ProtocolState {
     public_key: PublicKey<Curve>,
     aggregate_key: Option<AggregateKey<Curve>>,
     aggregate_ready: Arc<Notify>,
+    aggregate_parties: HashSet<usize>,
     known_peers: HashMap<usize, PeerSummary>,
     peer_infos: HashMap<String, PeerInfo>,
     party_keys: HashMap<usize, PublicKey<Curve>>,
@@ -392,6 +393,7 @@ impl ProtocolState {
             public_key,
             aggregate_key: None,
             aggregate_ready: Arc::new(Notify::new()),
+            aggregate_parties: HashSet::new(),
             known_peers: HashMap::new(),
             peer_infos: HashMap::new(),
             party_keys: HashMap::new(),
@@ -711,83 +713,53 @@ impl ProtocolState {
     }
 
     fn try_build_aggregate_key(&mut self) -> Result<(), PeerError> {
-        if self.aggregate_key.is_some() {
-            return Ok(());
-        }
-
-        // Calculate minimum quorum needed (must have at least threshold + 1 parties)
         let min_quorum = self.config.threshold + 1;
+        let available_parties: HashSet<usize> = self.party_keys.keys().copied().collect();
 
-        // Wait until we have at least the minimum quorum
-        if self.party_keys.len() < min_quorum {
+        if available_parties.len() < min_quorum {
             debug!(
                 "Waiting for minimum quorum: have {} parties, need at least {}",
-                self.party_keys.len(),
+                available_parties.len(),
                 min_quorum
             );
             return Ok(());
         }
 
-        // If we have exactly n parties, build immediately
-        if self.party_keys.len() == self.config.n {
-            let mut ordered = vec![None; self.config.n];
-            for (&id, pk) in &self.party_keys {
-                if id < ordered.len() {
-                    ordered[id] = Some(pk.clone());
-                }
-            }
+        let already_synced = self.aggregate_key.is_some()
+            && available_parties.len() == self.aggregate_parties.len()
+            && available_parties
+                .iter()
+                .all(|id| self.aggregate_parties.contains(id));
+        if already_synced {
+            return Ok(());
+        }
 
-            if ordered.iter().any(|pk| pk.is_none()) {
-                return Ok(());
+        let mut ordered = Vec::with_capacity(self.config.n);
+        for id in 0..self.config.n {
+            if let Some(pk) = self.party_keys.get(&id) {
+                ordered.push(pk.clone());
+            } else {
+                ordered.push(PublicKey::zero_for_domain(id, self.config.n));
             }
+        }
 
-            let public_keys: Vec<PublicKey<Curve>> =
-                ordered.into_iter().map(|pk| pk.unwrap()).collect();
-            let agg = AggregateKey::new(public_keys, &self.params)?;
-            self.aggregate_key = Some(agg);
+        let agg = AggregateKey::new(ordered, &self.params)?;
+        let available_count = available_parties.len();
+        self.aggregate_key = Some(agg);
+        self.aggregate_parties = available_parties;
+
+        if available_count == self.config.n {
             info!(
                 "Aggregate key constructed for all {} parties.",
                 self.config.n
             );
-            self.aggregate_ready.notify_waiters();
-            return Ok(());
-        }
-
-        // If we have more than minimum but less than n, we can still proceed
-        // This allows for dynamic peer joining/leaving
-        if self.party_keys.len() >= min_quorum && self.party_keys.len() < self.config.n {
+        } else {
             info!(
-                "Have {} of {} parties (minimum quorum: {}). Building aggregate key with available parties.",
-                self.party_keys.len(),
-                self.config.n,
-                min_quorum
+                "Aggregate key constructed with {} parties (minimum quorum: {}).",
+                available_count, min_quorum
             );
-
-            // Build with the parties we have
-            let mut ordered = vec![None; self.config.n];
-            for (&id, pk) in &self.party_keys {
-                if id < ordered.len() {
-                    ordered[id] = Some(pk.clone());
-                }
-            }
-
-            // Check if we can build a valid key with the available parties
-            let available_count = ordered.iter().filter(|pk| pk.is_some()).count();
-            if available_count < min_quorum {
-                return Ok(());
-            }
-
-            let public_keys: Vec<PublicKey<Curve>> =
-                ordered.into_iter().map(|pk| pk.unwrap()).collect();
-            let agg = AggregateKey::new(public_keys, &self.params)?;
-            self.aggregate_key = Some(agg);
-            info!(
-                "Aggregate key constructed with {} parties (quorum-based).",
-                available_count
-            );
-            self.aggregate_ready.notify_waiters();
         }
-
+        self.aggregate_ready.notify_waiters();
         Ok(())
     }
 
