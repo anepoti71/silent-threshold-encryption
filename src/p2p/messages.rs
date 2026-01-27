@@ -67,6 +67,7 @@ pub enum P2PMessage {
     /// Aggregate Key: Broadcast computed aggregate key
     AggregateKeyBroadcast {
         from_peer: PeerId,
+        party_id: usize,
         agg_key_bytes: Vec<u8>,
         contributing_parties: Vec<usize>,
         signature: Vec<u8>,
@@ -103,16 +104,20 @@ pub enum P2PMessage {
     PartySelectionProposal {
         proposal_id: MessageId,
         from_peer: PeerId,
+        party_id: usize,
         selected_parties: Vec<usize>,
         threshold: usize,
+        signature: Vec<u8>,
     },
 
     /// Consensus: Vote on party selection
     PartySelectionVote {
         proposal_id: MessageId,
         from_peer: PeerId,
+        party_id: usize,
         approve: bool,
         reason: Option<String>,
+        signature: Vec<u8>,
     },
 
     /// Generic: Forward message to other peers (gossip)

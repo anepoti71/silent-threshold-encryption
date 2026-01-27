@@ -64,6 +64,22 @@ struct Cli {
     /// Disable mDNS peer discovery (useful in sandboxed environments)
     #[arg(long = "disable-mdns", default_value_t = false)]
     disable_mdns: bool,
+
+    /// Path to a roster file mapping `party_id peer_id` (one per line)
+    #[arg(long = "roster", value_name = "FILE")]
+    roster: Option<PathBuf>,
+
+    /// Max ciphertext age (seconds) before rejecting as stale
+    #[arg(long = "max-ct-age", default_value_t = 300)]
+    max_ct_age: u64,
+
+    /// Max ciphertext clock skew into the future (seconds)
+    #[arg(long = "max-ct-future", default_value_t = 30)]
+    max_ct_future: u64,
+
+    /// Max number of ciphertext hashes to keep for replay protection
+    #[arg(long = "ct-cache", default_value_t = 1024)]
+    ct_cache: usize,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -86,6 +102,14 @@ async fn main() {
     init_tracing();
     let cli = Cli::parse();
 
+    let roster = match load_roster(cli.roster.as_ref()) {
+        Ok(roster) => roster,
+        Err(e) => {
+            eprintln!("Failed to load roster: {e}");
+            std::process::exit(1);
+        }
+    };
+
     let config = PeerConfig {
         party_id: cli.party_id,
         n: cli.parties,
@@ -98,6 +122,10 @@ async fn main() {
         mode: cli.mode.into(),
         auto_decrypt: cli.auto_decrypt,
         enable_mdns: !cli.disable_mdns,
+        roster,
+        max_ciphertext_age_secs: cli.max_ct_age,
+        max_ciphertext_future_secs: cli.max_ct_future,
+        max_ciphertext_cache_entries: cli.ct_cache,
     };
 
     let node = PeerNode::new(config);
@@ -117,4 +145,37 @@ fn init_tracing() {
             )
             .try_init();
     });
+}
+
+fn load_roster(path: Option<&PathBuf>) -> Result<std::collections::HashMap<usize, String>, Box<dyn std::error::Error>> {
+    let Some(path) = path else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let contents = std::fs::read_to_string(path)?;
+    let mut roster = std::collections::HashMap::new();
+    for (line_no, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut parts = trimmed.split_whitespace();
+        let party = parts
+            .next()
+            .ok_or_else(|| format!("Invalid roster line {}: missing party id", line_no + 1))?;
+        let peer = parts
+            .next()
+            .ok_or_else(|| format!("Invalid roster line {}: missing peer id", line_no + 1))?;
+        if parts.next().is_some() {
+            return Err(format!(
+                "Invalid roster line {}: expected 'party_id peer_id'",
+                line_no + 1
+            )
+            .into());
+        }
+        let party_id: usize = party.parse().map_err(|_| {
+            format!("Invalid roster line {}: party id must be a number", line_no + 1)
+        })?;
+        roster.insert(party_id, peer.to_string());
+    }
+    Ok(roster)
 }

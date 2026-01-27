@@ -54,6 +54,10 @@ pub struct PeerConfig {
     pub mode: PeerRuntimeMode,
     pub auto_decrypt: bool,
     pub enable_mdns: bool,
+    pub roster: HashMap<usize, String>,
+    pub max_ciphertext_age_secs: u64,
+    pub max_ciphertext_future_secs: u64,
+    pub max_ciphertext_cache_entries: usize,
 }
 
 /// Determines whether the peer should initiate an example encryption run.
@@ -128,6 +132,15 @@ impl PeerNode {
                 .await
                 .map_err(|e| PeerError::Network(format!("{:?}", e)))?,
         );
+        if let Some(expected_peer) = self.config.roster.get(&self.config.party_id) {
+            let actual = network.peer_id().to_string();
+            if expected_peer != &actual {
+                return Err(PeerError::Config(format!(
+                    "local peer_id {} does not match roster for party {} (expected {})",
+                    actual, self.config.party_id, expected_peer
+                )));
+            }
+        }
 
         {
             let mut guard = state.write().await;
@@ -376,6 +389,7 @@ struct ProtocolState {
     peer_public_keys: HashMap<String, libp2p::identity::PublicKey>,
     ciphertexts: HashMap<MessageId, Ciphertext<Curve>>,
     decrypt_sessions: HashMap<MessageId, DecryptSession>,
+    seen_ciphertexts: HashMap<MessageId, u64>,
 }
 
 #[derive(Clone)]
@@ -415,6 +429,7 @@ impl ProtocolState {
             peer_public_keys: HashMap::new(),
             ciphertexts: HashMap::new(),
             decrypt_sessions: HashMap::new(),
+            seen_ciphertexts: HashMap::new(),
         }
     }
 
@@ -445,6 +460,49 @@ impl ProtocolState {
         );
         // Store our own public key for consistency
         self.peer_public_keys.insert(peer_id, public_key);
+    }
+
+    fn enforce_roster(&self, party_id: usize, peer_id: &str) -> Result<(), PeerError> {
+        if let Some(expected) = self.config.roster.get(&party_id) {
+            if expected != peer_id {
+                return Err(PeerError::Config(format!(
+                    "roster mismatch for party {}: expected {}, got {}",
+                    party_id, expected, peer_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_and_track_ciphertext(
+        &mut self,
+        id: MessageId,
+        timestamp: u64,
+    ) -> Result<bool, PeerError> {
+        let now = current_timestamp();
+        if timestamp + self.config.max_ciphertext_age_secs < now {
+            return Ok(false);
+        }
+        if timestamp > now + self.config.max_ciphertext_future_secs {
+            return Ok(false);
+        }
+        if self.seen_ciphertexts.contains_key(&id) {
+            return Ok(false);
+        }
+        self.seen_ciphertexts.insert(id, timestamp);
+        if self.seen_ciphertexts.len() > self.config.max_ciphertext_cache_entries {
+            let mut oldest: Option<(MessageId, u64)> = None;
+            for (key, ts) in self.seen_ciphertexts.iter() {
+                if oldest.map_or(true, |(_, oldest_ts)| *ts < oldest_ts) {
+                    oldest = Some((*key, *ts));
+                }
+            }
+            if let Some((key, _)) = oldest {
+                self.seen_ciphertexts.remove(&key);
+            }
+        }
+        self.seen_ciphertexts.retain(|_, ts| now <= *ts + self.config.max_ciphertext_age_secs);
+        Ok(true)
     }
 
     fn build_peer_announcement(&self, peer_id: &str) -> P2PMessage {
@@ -494,6 +552,17 @@ impl ProtocolState {
                 listen_addr,
                 capabilities: _,
             } => {
+                if let Some(pid) = party_id {
+                    if let Some(expected) = self.config.roster.get(&pid) {
+                        if expected != &peer_id {
+                            warn!(
+                                "Ignoring announcement for party {} from peer {} (expected {})",
+                                pid, peer_id, expected
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
                 // Store the peer's libp2p public key for future signature verification
                 if let Ok(public_key) = peer_id_to_public_key(&peer_id) {
                     self.peer_public_keys.insert(peer_id.clone(), public_key);
@@ -551,6 +620,7 @@ impl ProtocolState {
                 pk_bytes,
                 signature,
             } => {
+                self.enforce_roster(party_id, &peer_id)?;
                 if let Some(existing) = self.known_peers.get(&party_id) {
                     if existing.peer_id != peer_id {
                         return Err(PeerError::Config(format!(
@@ -610,6 +680,50 @@ impl ProtocolState {
                 self.try_build_aggregate_key()?;
                 Ok(())
             }
+            P2PMessage::AggregateKeyBroadcast {
+                from_peer,
+                party_id,
+                agg_key_bytes,
+                contributing_parties,
+                signature,
+            } => {
+                self.enforce_roster(party_id, &from_peer)?;
+                let payload = build_aggregate_key_payload(&agg_key_bytes, &contributing_parties);
+                if let Some(public_key) = self.peer_public_keys.get(&from_peer) {
+                    verify_crypto_signature(
+                        public_key,
+                        &from_peer,
+                        party_id,
+                        &payload,
+                        &signature,
+                    )?;
+                } else {
+                    match peer_id_to_public_key(&from_peer) {
+                        Ok(public_key) => {
+                            verify_crypto_signature(
+                                &public_key,
+                                &from_peer,
+                                party_id,
+                                &payload,
+                                &signature,
+                            )?;
+                            self.peer_public_keys.insert(from_peer.clone(), public_key);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Cannot verify aggregate key from party {}: no public key available: {:?}",
+                                party_id, e
+                            );
+                            return Err(PeerError::Signature(e));
+                        }
+                    }
+                }
+                info!(
+                    "Verified aggregate key broadcast from party {} (peer {})",
+                    party_id, from_peer
+                );
+                Ok(())
+            }
             P2PMessage::CiphertextBroadcast {
                 from_peer,
                 party_id,
@@ -619,6 +733,7 @@ impl ProtocolState {
                 signature,
                 ..
             } => {
+                self.enforce_roster(party_id, &from_peer)?;
                 if !self.peer_infos.contains_key(&from_peer) {
                     warn!(
                         "Ignoring ciphertext from unknown peer {} (not announced yet)",
@@ -675,6 +790,11 @@ impl ProtocolState {
                         }
                     }
                 }
+                let id = hash_ciphertext(&ct_bytes);
+                if !self.check_and_track_ciphertext(id, timestamp)? {
+                    debug!("Ignoring replayed or stale ciphertext from {}", from_peer);
+                    return Ok(());
+                }
                 let ct = Ciphertext::<Curve>::deserialize_compressed(&ct_bytes[..])
                     .map_err(|e| PeerError::Serialization(e.to_string()))?;
                 if ct.t != threshold {
@@ -683,7 +803,6 @@ impl ProtocolState {
                         threshold, ct.t
                     )));
                 }
-                let id = hash_ciphertext(&ct_bytes);
                 self.ciphertexts.insert(id, ct.clone());
                 info!("Received ciphertext broadcast from {}", from_peer);
                 // Only passive peers should NOT start their own decryption session.
@@ -747,6 +866,7 @@ impl ProtocolState {
                 pd_bytes,
                 signature,
             } => {
+                self.enforce_roster(party_id, &peer_id)?;
                 // Verify the signature before accepting the partial decryption
                 let mut message_to_verify = Vec::new();
                 message_to_verify.extend_from_slice(&request_id);
@@ -805,6 +925,99 @@ impl ProtocolState {
                         self.finalize_decryption(request_id)?;
                     }
                 }
+                Ok(())
+            }
+            P2PMessage::PartySelectionProposal {
+                proposal_id,
+                from_peer,
+                party_id,
+                selected_parties,
+                threshold,
+                signature,
+            } => {
+                self.enforce_roster(party_id, &from_peer)?;
+                let payload =
+                    build_party_selection_proposal_payload(&proposal_id, &selected_parties, threshold);
+                if let Some(public_key) = self.peer_public_keys.get(&from_peer) {
+                    verify_crypto_signature(
+                        public_key,
+                        &from_peer,
+                        party_id,
+                        &payload,
+                        &signature,
+                    )?;
+                } else {
+                    match peer_id_to_public_key(&from_peer) {
+                        Ok(public_key) => {
+                            verify_crypto_signature(
+                                &public_key,
+                                &from_peer,
+                                party_id,
+                                &payload,
+                                &signature,
+                            )?;
+                            self.peer_public_keys.insert(from_peer.clone(), public_key);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Cannot verify party selection proposal from party {}: no public key available: {:?}",
+                                party_id, e
+                            );
+                            return Err(PeerError::Signature(e));
+                        }
+                    }
+                }
+                info!(
+                    "Verified party selection proposal {} from party {}",
+                    hex::encode(proposal_id),
+                    party_id
+                );
+                Ok(())
+            }
+            P2PMessage::PartySelectionVote {
+                proposal_id,
+                from_peer,
+                party_id,
+                approve,
+                reason,
+                signature,
+            } => {
+                self.enforce_roster(party_id, &from_peer)?;
+                let payload = build_party_selection_vote_payload(&proposal_id, approve, &reason);
+                if let Some(public_key) = self.peer_public_keys.get(&from_peer) {
+                    verify_crypto_signature(
+                        public_key,
+                        &from_peer,
+                        party_id,
+                        &payload,
+                        &signature,
+                    )?;
+                } else {
+                    match peer_id_to_public_key(&from_peer) {
+                        Ok(public_key) => {
+                            verify_crypto_signature(
+                                &public_key,
+                                &from_peer,
+                                party_id,
+                                &payload,
+                                &signature,
+                            )?;
+                            self.peer_public_keys.insert(from_peer.clone(), public_key);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Cannot verify party selection vote from party {}: no public key available: {:?}",
+                                party_id, e
+                            );
+                            return Err(PeerError::Signature(e));
+                        }
+                    }
+                }
+                info!(
+                    "Verified party selection vote {} from party {}",
+                    hex::encode(proposal_id),
+                    party_id
+                );
                 Ok(())
             }
             _ => Ok(()),
@@ -1021,6 +1234,50 @@ fn hash_ciphertext(data: &[u8]) -> MessageId {
     id
 }
 
+fn build_aggregate_key_payload(agg_key_bytes: &[u8], contributing_parties: &[usize]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(agg_key_bytes.len() + contributing_parties.len() * 8 + 4);
+    payload.extend_from_slice(b"ste-agg-key-v1");
+    payload.extend_from_slice(agg_key_bytes);
+    for party in contributing_parties {
+        payload.extend_from_slice(&(*party as u64).to_le_bytes());
+    }
+    payload
+}
+
+fn build_party_selection_proposal_payload(
+    proposal_id: &MessageId,
+    selected_parties: &[usize],
+    threshold: usize,
+) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(selected_parties.len() * 8 + 32 + 16);
+    payload.extend_from_slice(b"ste-party-select-v1");
+    payload.extend_from_slice(proposal_id);
+    payload.extend_from_slice(&(threshold as u64).to_le_bytes());
+    for party in selected_parties {
+        payload.extend_from_slice(&(*party as u64).to_le_bytes());
+    }
+    payload
+}
+
+fn build_party_selection_vote_payload(
+    proposal_id: &MessageId,
+    approve: bool,
+    reason: &Option<String>,
+) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(64);
+    payload.extend_from_slice(b"ste-party-vote-v1");
+    payload.extend_from_slice(proposal_id);
+    payload.push(u8::from(approve));
+    if let Some(text) = reason {
+        let bytes = text.as_bytes();
+        payload.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        payload.extend_from_slice(bytes);
+    } else {
+        payload.extend_from_slice(&0u64.to_le_bytes());
+    }
+    payload
+}
+
 fn build_ciphertext_signature_payload(ct_bytes: &[u8], threshold: usize, timestamp: u64) -> Vec<u8> {
     let mut payload = Vec::with_capacity(ct_bytes.len() + 16);
     payload.extend_from_slice(ct_bytes);
@@ -1050,6 +1307,16 @@ fn validate_config(config: &PeerConfig) -> Result<(), PeerError> {
     if config.listen_addresses.is_empty() {
         return Err(PeerError::Config(
             "at least one listen address is required".to_string(),
+        ));
+    }
+    if config.max_ciphertext_age_secs == 0 {
+        return Err(PeerError::Config(
+            "max_ciphertext_age_secs must be at least 1".to_string(),
+        ));
+    }
+    if config.max_ciphertext_cache_entries == 0 {
+        return Err(PeerError::Config(
+            "max_ciphertext_cache_entries must be at least 1".to_string(),
         ));
     }
     Ok(())
