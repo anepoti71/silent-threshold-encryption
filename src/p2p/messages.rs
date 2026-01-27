@@ -75,9 +75,11 @@ pub enum P2PMessage {
     /// Encryption: Broadcast ciphertext
     CiphertextBroadcast {
         from_peer: PeerId,
+        party_id: usize,
         ct_bytes: Vec<u8>,
         threshold: usize,
         timestamp: u64,
+        signature: Vec<u8>,
     },
 
     /// Decryption: Request partial decryption

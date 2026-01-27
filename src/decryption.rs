@@ -96,21 +96,13 @@ pub fn agg_dec<E: Pairing>(
         ));
     }
 
-    // Must have at least t+1 parties selected (including dummy party) for threshold t
-    if num_selected < t + 1 {
-        return Err(SteError::InvalidThreshold(
-            format!(
-                "Insufficient parties selected: need at least {} parties (threshold t={}), but only {} selected",
-                t + 1, t, num_selected
-            )
-        ));
-    }
-
-    // Cannot have more than n parties selected
-    if num_selected > n {
-        return Err(SteError::ValidationError(format!(
-            "Too many parties selected: {} selected, but only {} parties exist",
-            num_selected, n
+    // Current decryption proof expects exactly t+1 parties.
+    if num_selected != t + 1 {
+        return Err(SteError::InvalidThreshold(format!(
+            "Expected exactly {} selected parties for threshold t={}, but got {}",
+            t + 1,
+            t,
+            num_selected
         )));
     }
 

@@ -109,7 +109,14 @@ impl<E: Pairing> LagrangePowers<E> {
 /// # Security
 /// This struct implements `Zeroize` and `ZeroizeOnDrop` to ensure that secret
 /// key material is securely erased from memory when the key is dropped.
-#[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Debug, ZeroizeOnDrop)]
+///
+/// # WARNING
+/// This type is **not** serializable by default. Enabling the
+/// `serialize-secret` feature will allow serialization/deserialization of
+/// secret keys, which is dangerous in production. Only enable for tests or
+/// controlled environments.
+#[cfg_attr(feature = "serialize-secret", derive(CanonicalSerialize, CanonicalDeserialize))]
+#[derive(Clone, Debug, ZeroizeOnDrop)]
 pub struct SecretKey<E: Pairing> {
     sk: SensitiveScalar<E::ScalarField>,
 }
@@ -188,6 +195,10 @@ impl<E: Pairing> Zeroize for SecretKey<E> {
 }
 
 impl<E: Pairing> SecretKey<E> {
+    /// WARNING: Secret keys are intentionally NOT serializable by default.
+    ///
+    /// Enable the `serialize-secret` feature only for testing or controlled
+    /// environments where leaking secret material is acceptable.
     /// Creates a new secret key with a random scalar.
     ///
     /// # Arguments
@@ -408,6 +419,22 @@ impl<E: Pairing> AggregateKey<E> {
         let n = pk.len();
         if n == 0 {
             return Err(SteError::ValidationError("pk cannot be empty".to_string()));
+        }
+        for (idx, pki) in pk.iter().enumerate() {
+            if pki.id != idx {
+                return Err(SteError::ValidationError(format!(
+                    "public key ordering mismatch: pk[{}].id = {}, expected {}",
+                    idx, pki.id, idx
+                )));
+            }
+            if pki.sk_li_lj_z.len() != n {
+                return Err(SteError::ValidationError(format!(
+                    "public key {} has sk_li_lj_z length {}, expected {}",
+                    pki.id,
+                    pki.sk_li_lj_z.len(),
+                    n
+                )));
+            }
         }
         if n >= params.powers_of_h.len() {
             return Err(SteError::ValidationError(format!(

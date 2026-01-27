@@ -270,12 +270,13 @@ async fn run_initiator_flow(
 ) -> Result<(), PeerError> {
     wait_for_aggregate(state.clone()).await?;
     info!("Aggregate key ready; initiating encryption run.");
-    let ciphertext = {
+    let (ciphertext, party_id) = {
         let guard = state.write().await;
-        guard.encrypt_message()?
+        let ct = guard.encrypt_message()?;
+        (ct, guard.config.party_id)
     };
 
-    broadcast_ciphertext(network.clone(), &ciphertext).await?;
+    broadcast_ciphertext(network.clone(), party_id, &ciphertext).await?;
 
     // Initiator immediately requests partial decryptions if auto decrypt is enabled.
     {
@@ -292,6 +293,7 @@ async fn run_initiator_flow(
 
 async fn broadcast_ciphertext(
     network: Arc<Libp2pNetwork>,
+    party_id: usize,
     ciphertext: &Ciphertext<Curve>,
 ) -> Result<(), PeerError> {
     let mut ct_bytes = Vec::new();
@@ -299,11 +301,22 @@ async fn broadcast_ciphertext(
         .serialize_compressed(&mut ct_bytes)
         .map_err(|e| PeerError::Serialization(e.to_string()))?;
 
+    let timestamp = current_timestamp();
+    let payload = build_ciphertext_signature_payload(&ct_bytes, ciphertext.t, timestamp);
+    let signature = sign_crypto_message(
+        network.keypair(),
+        network.peer_id(),
+        party_id,
+        &payload,
+    )?;
+
     let message = P2PMessage::CiphertextBroadcast {
         from_peer: network.peer_id().to_string(),
+        party_id,
         ct_bytes,
         threshold: ciphertext.t,
-        timestamp: current_timestamp(),
+        timestamp,
+        signature,
     };
 
     network
@@ -538,6 +551,24 @@ impl ProtocolState {
                 pk_bytes,
                 signature,
             } => {
+                if let Some(existing) = self.known_peers.get(&party_id) {
+                    if existing.peer_id != peer_id {
+                        return Err(PeerError::Config(format!(
+                            "party {} already bound to peer {}, rejecting key from {}",
+                            party_id, existing.peer_id, peer_id
+                        )));
+                    }
+                }
+                if let Some(info) = self.peer_infos.get(&peer_id) {
+                    if let Some(info_party) = info.party_id {
+                        if info_party != party_id {
+                            return Err(PeerError::Config(format!(
+                                "peer {} already announced as party {}, rejecting key for party {}",
+                                peer_id, info_party, party_id
+                            )));
+                        }
+                    }
+                }
                 // Verify the signature before accepting the public key
                 if let Some(public_key) = self.peer_public_keys.get(&peer_id) {
                     verify_crypto_signature(public_key, &peer_id, party_id, &pk_bytes, &signature)
@@ -581,11 +612,77 @@ impl ProtocolState {
             }
             P2PMessage::CiphertextBroadcast {
                 from_peer,
+                party_id,
                 ct_bytes,
+                threshold,
+                timestamp,
+                signature,
                 ..
             } => {
+                if !self.peer_infos.contains_key(&from_peer) {
+                    warn!(
+                        "Ignoring ciphertext from unknown peer {} (not announced yet)",
+                        from_peer
+                    );
+                    return Ok(());
+                }
+                if let Some(existing) = self.known_peers.get(&party_id) {
+                    if existing.peer_id != from_peer {
+                        return Err(PeerError::Config(format!(
+                            "party {} already bound to peer {}, rejecting ciphertext from {}",
+                            party_id, existing.peer_id, from_peer
+                        )));
+                    }
+                }
+                if let Some(info) = self.peer_infos.get(&from_peer) {
+                    if let Some(info_party) = info.party_id {
+                        if info_party != party_id {
+                            return Err(PeerError::Config(format!(
+                                "peer {} announced as party {}, rejecting ciphertext for party {}",
+                                from_peer, info_party, party_id
+                            )));
+                        }
+                    }
+                }
+                let payload =
+                    build_ciphertext_signature_payload(&ct_bytes, threshold, timestamp);
+                if let Some(public_key) = self.peer_public_keys.get(&from_peer) {
+                    verify_crypto_signature(
+                        public_key,
+                        &from_peer,
+                        party_id,
+                        &payload,
+                        &signature,
+                    )?;
+                } else {
+                    match peer_id_to_public_key(&from_peer) {
+                        Ok(public_key) => {
+                            verify_crypto_signature(
+                                &public_key,
+                                &from_peer,
+                                party_id,
+                                &payload,
+                                &signature,
+                            )?;
+                            self.peer_public_keys.insert(from_peer.clone(), public_key);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Cannot verify ciphertext from party {}: no public key available: {:?}",
+                                party_id, e
+                            );
+                            return Err(PeerError::Signature(e));
+                        }
+                    }
+                }
                 let ct = Ciphertext::<Curve>::deserialize_compressed(&ct_bytes[..])
                     .map_err(|e| PeerError::Serialization(e.to_string()))?;
+                if ct.t != threshold {
+                    return Err(PeerError::Config(format!(
+                        "ciphertext threshold mismatch: payload {}, ciphertext {}",
+                        threshold, ct.t
+                    )));
+                }
                 let id = hash_ciphertext(&ct_bytes);
                 self.ciphertexts.insert(id, ct.clone());
                 info!("Received ciphertext broadcast from {}", from_peer);
@@ -922,6 +1019,14 @@ fn hash_ciphertext(data: &[u8]) -> MessageId {
     let mut id = [0u8; 32];
     id.copy_from_slice(&digest[..32]);
     id
+}
+
+fn build_ciphertext_signature_payload(ct_bytes: &[u8], threshold: usize, timestamp: u64) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(ct_bytes.len() + 16);
+    payload.extend_from_slice(ct_bytes);
+    payload.extend_from_slice(&(threshold as u64).to_le_bytes());
+    payload.extend_from_slice(&timestamp.to_le_bytes());
+    payload
 }
 
 fn validate_config(config: &PeerConfig) -> Result<(), PeerError> {

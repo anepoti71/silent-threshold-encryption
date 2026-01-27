@@ -103,7 +103,7 @@ where
 
         let plain_coeffs = convert_to_bigints(polynomial.coeffs());
 
-        let powers_of_g = &params.powers_of_g[..=d].to_vec();
+        let powers_of_g = &params.powers_of_g[..=d];
         //let msm_time = start_timer!(|| "MSM to compute commitment to plaintext poly");
         let commitment = <E::G1 as VariableBaseMSM>::msm_bigint(&powers_of_g[..], &plain_coeffs);
         //end_timer!(msm_time);
@@ -116,7 +116,7 @@ where
 
         let plain_coeffs = convert_to_bigints(polynomial.coeffs());
 
-        let powers_of_h = &params.powers_of_h[..=d].to_vec();
+        let powers_of_h = &params.powers_of_h[..=d];
         //let msm_time = start_timer!(|| "MSM to compute commitment to plaintext poly");
         let commitment = <E::G2 as VariableBaseMSM>::msm_bigint(&powers_of_h[..], &plain_coeffs);
         //end_timer!(msm_time);

@@ -35,6 +35,7 @@ hex = "0.4"
 asm = ["ark-ff/asm"]
 parallel = ["ark-std/parallel", "ark-ec/parallel", "ark-ff/parallel", "ark-poly/parallel"]
 distributed = ["tokio", "serde", "bincode", "clap", "rustls", "tokio-rustls", "rustls-pemfile", "rcgen", "libp2p"]
+serialize-secret = []
 default = []
 
 [profile.dev]
