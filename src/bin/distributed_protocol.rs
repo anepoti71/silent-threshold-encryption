@@ -62,6 +62,8 @@
 #[cfg(feature = "distributed")]
 mod distributed {
     use ark_ec::pairing::Pairing;
+    use ark_ec::PrimeGroup;
+    use ark_ff::PrimeField;
     use ark_poly::univariate::DensePolynomial;
     use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
     use ark_std::{rand::RngCore, UniformRand, Zero};
@@ -83,6 +85,7 @@ mod distributed {
     use tokio::net::{TcpListener, TcpStream};
     use tokio_rustls::TlsAcceptor;
     use tokio_rustls::TlsConnector;
+    use tokio::sync::mpsc;
 
     mod tls_config;
 
@@ -104,13 +107,18 @@ mod distributed {
             lagrange_bytes: Vec<u8>, // Serialized Lagrange powers
             lagrange_hash: [u8; 32],
             n: usize,
+            challenge: [u8; 32],
         },
         /// Broadcast ciphertext to all parties
         Ciphertext {
             ct_bytes: Vec<u8>, // Serialized ciphertext
         },
         /// Request partial decryption from selected parties
-        RequestPartialDecryption { party_id: usize, ct_bytes: Vec<u8> },
+        RequestPartialDecryption {
+            party_id: usize,
+            ct_bytes: Vec<u8>,
+            request_id: [u8; 32],
+        },
         /// Notify party of successful completion
         Success { message: String },
         /// Notify party of error
@@ -124,11 +132,14 @@ mod distributed {
         PublicKey {
             party_id: usize,
             pk_bytes: Vec<u8>, // Serialized public key
+            pop_sig: Vec<u8>,
         },
         /// Party sends partial decryption
         PartialDecryption {
             party_id: usize,
             pd_bytes: Vec<u8>, // Serialized G2 element
+            request_id: [u8; 32],
+            signature: Vec<u8>,
         },
         /// Party ready and waiting for commands
         Ready { party_id: usize },
@@ -174,6 +185,23 @@ mod distributed {
         }
     }
 
+    fn hash_bytes(data: &[u8]) -> [u8; 32] {
+        let digest = Blake2b512::digest(data);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&digest[..32]);
+        out
+    }
+
+    fn bls_message_from_payload(payload: &[u8]) -> G2 {
+        let digest = Blake2b512::digest(payload);
+        let scalar = Fr::from_le_bytes_mod_order(digest.as_slice());
+        G2::generator() * scalar
+    }
+
+    fn verify_bls_signature(pk: &<E as Pairing>::G1, message: &G2, signature: &G2) -> bool {
+        E::pairing(<E as Pairing>::G1::generator(), *signature) == E::pairing(*pk, *message)
+    }
+
     // ============================================================================
     // Coordinator Server
     // ============================================================================
@@ -187,9 +215,11 @@ mod distributed {
         lagrange_hash: [u8; 32],
         public_keys: HashMap<usize, PublicKey<E>>,
         partial_decryptions: HashMap<usize, G2>,
-        party_connections: HashMap<usize, tokio_rustls::server::TlsStream<TcpStream>>,
+        party_connections: HashMap<usize, tokio::io::WriteHalf<tokio_rustls::server::TlsStream<TcpStream>>>,
         cert_path: Option<String>,
         key_path: Option<String>,
+        public_key_challenges: HashMap<usize, [u8; 32]>,
+        message_rx: Option<mpsc::Receiver<(usize, PartyMessage)>>,
     }
 
     impl Coordinator {
@@ -231,6 +261,8 @@ mod distributed {
                 party_connections: HashMap::new(),
                 cert_path,
                 key_path,
+                public_key_challenges: HashMap::new(),
+                message_rx: None,
             })
         }
 
@@ -262,6 +294,9 @@ mod distributed {
                 self.n
             );
 
+            let (msg_tx, msg_rx) = mpsc::channel(64);
+            self.message_rx = Some(msg_rx);
+
             // Accept connections from all n parties
             for i in 0..self.n {
                 let (tcp_stream, peer_addr) = listener.accept().await?;
@@ -276,7 +311,30 @@ mod distributed {
                     "✓ Coordinator: Party {} connected with TLS from {}",
                     i, peer_addr
                 );
-                self.party_connections.insert(i, tls_stream);
+                let (read_half, write_half) = tokio::io::split(tls_stream);
+                self.party_connections.insert(i, write_half);
+
+                let tx = msg_tx.clone();
+                tokio::spawn(async move {
+                    let mut reader = read_half;
+                    loop {
+                        let len = match reader.read_u32().await {
+                            Ok(len) => len,
+                            Err(_) => break,
+                        };
+                        let mut data = vec![0u8; len as usize];
+                        if reader.read_exact(&mut data).await.is_err() {
+                            break;
+                        }
+                        let msg: PartyMessage = match deserialize(&data) {
+                            Ok(msg) => msg,
+                            Err(_) => break,
+                        };
+                        if tx.send((i, msg)).await.is_err() {
+                            break;
+                        }
+                    }
+                });
             }
 
             println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -360,11 +418,16 @@ mod distributed {
         async fn request_public_keys(&mut self) -> Result<(), Box<dyn std::error::Error>> {
             // Send requests to all parties
             for party_id in 0..self.n {
+                let mut rng = SecureRng::new();
+                let mut challenge = [0u8; 32];
+                rng.fill_bytes(&mut challenge);
+                self.public_key_challenges.insert(party_id, challenge);
                 let msg = CoordinatorMessage::RequestPublicKey {
                     party_id,
                     lagrange_bytes: self.lagrange_bytes.clone(),
                     lagrange_hash: self.lagrange_hash,
                     n: self.n,
+                    challenge,
                 };
                 self.send_to_party(party_id, &msg).await?;
             }
@@ -372,11 +435,38 @@ mod distributed {
             // Receive public keys from all parties
             let mut received = 0;
             while received < self.n {
-                let (party_id, msg) = self.receive_from_any_party().await?;
+                let (conn_party_id, msg) = self.receive_from_any_party().await?;
 
                 match msg {
-                    PartyMessage::PublicKey { party_id, pk_bytes } => {
+                    PartyMessage::PublicKey {
+                        party_id,
+                        pk_bytes,
+                        pop_sig,
+                    } => {
+                        if party_id != conn_party_id {
+                            return Err(format!(
+                                "Party id mismatch: connection {} reported {}",
+                                conn_party_id, party_id
+                            )
+                            .into());
+                        }
                         let pk = PublicKey::<E>::deserialize_compressed(&pk_bytes[..])?;
+                        let challenge = self.public_key_challenges.get(&party_id).ok_or_else(|| {
+                            format!("Missing public key challenge for party {}", party_id)
+                        })?;
+                        let mut payload = Vec::with_capacity(64);
+                        payload.extend_from_slice(b"ste-pk-pop-v1");
+                        payload.extend_from_slice(&party_id.to_le_bytes());
+                        payload.extend_from_slice(challenge);
+                        let message = bls_message_from_payload(&payload);
+                        let sig = G2::deserialize_compressed(&pop_sig[..])?;
+                        if !verify_bls_signature(&pk.bls_pk, &message, &sig) {
+                            return Err(format!(
+                                "Invalid public key proof-of-possession from party {}",
+                                party_id
+                            )
+                            .into());
+                        }
                         self.public_keys.insert(party_id, pk);
                         println!("✓ Coordinator: Received public key from party {}", party_id);
                         received += 1;
@@ -388,7 +478,7 @@ mod distributed {
                     _ => {
                         return Err(format!(
                             "Unexpected message from party {}: {:?}",
-                            party_id, msg
+                            conn_party_id, msg
                         )
                         .into());
                     }
@@ -406,21 +496,63 @@ mod distributed {
             // Serialize ciphertext
             let mut ct_bytes = Vec::new();
             ct.serialize_compressed(&mut ct_bytes)?;
+            let ct_hash = hash_bytes(&ct_bytes);
+            let mut rng = SecureRng::new();
+            let mut request_id = [0u8; 32];
+            rng.fill_bytes(&mut request_id);
 
             // Send requests to selected parties
             for &party_id in selected_parties {
                 let msg = CoordinatorMessage::RequestPartialDecryption {
                     party_id,
                     ct_bytes: ct_bytes.clone(),
+                    request_id,
                 };
                 self.send_to_party(party_id, &msg).await?;
             }
 
             // Receive partial decryptions
             for _ in 0..selected_parties.len() {
-                let (party_id, msg) = self.receive_from_any_party().await?;
+                let (conn_party_id, msg) = self.receive_from_any_party().await?;
 
-                if let PartyMessage::PartialDecryption { party_id, pd_bytes } = msg {
+                if let PartyMessage::PartialDecryption {
+                    party_id,
+                    pd_bytes,
+                    request_id: resp_request_id,
+                    signature,
+                } = msg
+                {
+                    if party_id != conn_party_id {
+                        return Err(format!(
+                            "Party id mismatch: connection {} reported {}",
+                            conn_party_id, party_id
+                        )
+                        .into());
+                    }
+                    if resp_request_id != request_id {
+                        return Err(format!(
+                            "Unexpected request_id from party {}",
+                            party_id
+                        )
+                        .into());
+                    }
+                    let pk = self.public_keys.get(&party_id).ok_or_else(|| {
+                        format!("Missing public key for party {}", party_id)
+                    })?;
+                    let mut payload = Vec::with_capacity(96);
+                    payload.extend_from_slice(b"ste-pd-v1");
+                    payload.extend_from_slice(&party_id.to_le_bytes());
+                    payload.extend_from_slice(&request_id);
+                    payload.extend_from_slice(&ct_hash);
+                    let message = bls_message_from_payload(&payload);
+                    let sig = G2::deserialize_compressed(&signature[..])?;
+                    if !verify_bls_signature(&pk.bls_pk, &message, &sig) {
+                        return Err(format!(
+                            "Invalid partial decryption signature from party {}",
+                            party_id
+                        )
+                        .into());
+                    }
                     let pd = G2::deserialize_compressed(&pd_bytes[..])?;
                     self.partial_decryptions.insert(party_id, pd);
                     println!(
@@ -429,7 +561,11 @@ mod distributed {
                     );
                 } else {
                     return Err(
-                        format!("Unexpected message from party {}: {:?}", party_id, msg).into(),
+                        format!(
+                            "Unexpected message from party {}: {:?}",
+                            conn_party_id, msg
+                        )
+                        .into(),
                     );
                 }
             }
@@ -460,29 +596,13 @@ mod distributed {
         async fn receive_from_any_party(
             &mut self,
         ) -> Result<(usize, PartyMessage), Box<dyn std::error::Error>> {
-            // Simple round-robin polling (in production, use select! or similar)
-            loop {
-                for party_id in 0..self.n {
-                    if let Some(stream) = self.party_connections.get_mut(&party_id) {
-                        // Try to read with a small timeout
-                        match tokio::time::timeout(
-                            std::time::Duration::from_millis(10),
-                            stream.read_u32(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(len)) => {
-                                let mut data = vec![0u8; len as usize];
-                                stream.read_exact(&mut data).await?;
-                                let msg: PartyMessage = deserialize(&data)?;
-                                return Ok((party_id, msg));
-                            }
-                            Ok(Err(e)) => return Err(e.into()),
-                            Err(_) => continue, // Timeout, try next party
-                        }
-                    }
-                }
-            }
+            let rx = self
+                .message_rx
+                .as_mut()
+                .ok_or("message channel not initialized")?;
+            rx.recv()
+                .await
+                .ok_or_else(|| "message channel closed".into())
         }
 
         async fn notify_all_parties(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -587,6 +707,7 @@ Use the CA certificate that signed the coordinator's TLS certificate.",
                         lagrange_bytes,
                         lagrange_hash,
                         n,
+                        challenge,
                     } => {
                         if party_id != self.id {
                             continue;
@@ -597,10 +718,15 @@ Use the CA certificate that signed the coordinator's TLS certificate.",
                             &lagrange_bytes,
                             lagrange_hash,
                             n,
+                            challenge,
                         )
                         .await?;
                     }
-                    CoordinatorMessage::RequestPartialDecryption { party_id, ct_bytes } => {
+                    CoordinatorMessage::RequestPartialDecryption {
+                        party_id,
+                        ct_bytes,
+                        request_id,
+                    } => {
                         if party_id != self.id {
                             continue;
                         }
@@ -608,7 +734,7 @@ Use the CA certificate that signed the coordinator's TLS certificate.",
                             "\n📨 Party {}: Received request for partial decryption",
                             self.id
                         );
-                        self.handle_partial_decryption_request(&mut stream, &ct_bytes)
+                        self.handle_partial_decryption_request(&mut stream, &ct_bytes, request_id)
                             .await?;
                     }
                     CoordinatorMessage::Success { message } => {
@@ -632,6 +758,7 @@ Use the CA certificate that signed the coordinator's TLS certificate.",
             lagrange_bytes: &[u8],
             lagrange_hash: [u8; 32],
             n: usize,
+            challenge: [u8; 32],
         ) -> Result<(), Box<dyn std::error::Error>> {
             // Obtain Lagrange parameters from cache or deserialize once
             let lagrange_params = if let Some((cached_hash, params)) = &self.lagrange_cache {
@@ -662,16 +789,26 @@ Use the CA certificate that signed the coordinator's TLS certificate.",
             // Compute public key using provided Lagrange parameters
             let pk = sk.lagrange_get_pk(self.id, lagrange_params.as_ref(), n)?;
 
-            // Store secret key for later
-            self.secret_key = Some(sk);
-
             // Serialize and send public key
             let mut pk_bytes = Vec::new();
             pk.serialize_compressed(&mut pk_bytes)?;
 
+            let mut payload = Vec::with_capacity(64);
+            payload.extend_from_slice(b"ste-pk-pop-v1");
+            payload.extend_from_slice(&self.id.to_le_bytes());
+            payload.extend_from_slice(&challenge);
+            let message = bls_message_from_payload(&payload);
+            let pop_sig = sk.sign_g2(&message);
+            let mut pop_sig_bytes = Vec::new();
+            pop_sig.serialize_compressed(&mut pop_sig_bytes)?;
+
+            // Store secret key for later
+            self.secret_key = Some(sk);
+
             let response = PartyMessage::PublicKey {
                 party_id: self.id,
                 pk_bytes,
+                pop_sig: pop_sig_bytes,
             };
 
             self.send_message(stream, &response).await?;
@@ -684,6 +821,7 @@ Use the CA certificate that signed the coordinator's TLS certificate.",
             &mut self,
             stream: &mut tokio_rustls::client::TlsStream<TcpStream>,
             ct_bytes: &[u8],
+            request_id: [u8; 32],
         ) -> Result<(), Box<dyn std::error::Error>> {
             // Deserialize ciphertext
             let ct = Ciphertext::<E>::deserialize_compressed(ct_bytes)?;
@@ -699,9 +837,22 @@ Use the CA certificate that signed the coordinator's TLS certificate.",
             let mut pd_bytes = Vec::new();
             pd.serialize_compressed(&mut pd_bytes)?;
 
+            let ct_hash = hash_bytes(ct_bytes);
+            let mut payload = Vec::with_capacity(96);
+            payload.extend_from_slice(b"ste-pd-v1");
+            payload.extend_from_slice(&self.id.to_le_bytes());
+            payload.extend_from_slice(&request_id);
+            payload.extend_from_slice(&ct_hash);
+            let message = bls_message_from_payload(&payload);
+            let signature = sk.sign_g2(&message);
+            let mut signature_bytes = Vec::new();
+            signature.serialize_compressed(&mut signature_bytes)?;
+
             let response = PartyMessage::PartialDecryption {
                 party_id: self.id,
                 pd_bytes,
+                request_id,
+                signature: signature_bytes,
             };
 
             self.send_message(stream, &response).await?;

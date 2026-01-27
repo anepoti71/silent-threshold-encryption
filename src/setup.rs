@@ -343,6 +343,14 @@ impl<E: Pairing> SecretKey<E> {
         ct.gamma_g2 * self.scalar()
     }
 
+    /// Signs an arbitrary G2 message using the secret key scalar.
+    ///
+    /// This is useful for proof-of-possession or message authentication in
+    /// protocols that use BLS-style signatures.
+    pub fn sign_g2(&self, message: &E::G2) -> E::G2 {
+        *message * self.scalar()
+    }
+
     /// Batch computes public keys for multiple secret keys in O(n) time per key.
     ///
     /// This is more efficient than calling `lagrange_get_pk` n times because it leverages

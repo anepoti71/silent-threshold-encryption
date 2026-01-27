@@ -65,6 +65,36 @@ pub fn agg_dec<E: Pairing>(
     let t = ct.t;
 
     // Validate inputs
+    if n == 0 {
+        return Err(SteError::ValidationError(
+            "number of parties must be at least 1".to_string(),
+        ));
+    }
+    if t == 0 {
+        return Err(SteError::ValidationError(
+            "threshold must be at least 1".to_string(),
+        ));
+    }
+    if t >= n {
+        return Err(SteError::ValidationError(format!(
+            "threshold ({}) must be < number of parties ({})",
+            t, n
+        )));
+    }
+    if params.powers_of_g.len() <= t + 1 {
+        return Err(SteError::ValidationError(format!(
+            "KZG parameters must contain at least t + 2 powers of g (need {}, have {})",
+            t + 2,
+            params.powers_of_g.len()
+        )));
+    }
+    if params.powers_of_h.len() < n + 1 {
+        return Err(SteError::ValidationError(format!(
+            "KZG parameters must contain at least n + 1 powers of h (need {}, have {})",
+            n + 1,
+            params.powers_of_h.len()
+        )));
+    }
     if partial_decryptions.len() != n {
         return Err(SteError::ValidationError(format!(
             "partial_decryptions length ({}) must equal n ({})",
